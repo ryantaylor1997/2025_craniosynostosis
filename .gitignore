@@ -10,3 +10,4 @@ analysis/*_cache/
 drafts/*_cache/
 .RData
 .Ruserdata
+.DS_Store

@@ -1,0 +1,405 @@
+---
+title: "Data processing"
+author: "Julia Wrobel"
+date: '`r format(Sys.time(), "%Y-%m-%d")`'
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+hitheme: tomorrow
+highlighter: highlight.js
+---
+
+## Overview
+
+This document is for data exploration and factor analysis.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(patchwork)
+library(GGally)
+library(psych)
+
+
+
+knitr::opts_chunk$set(echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 4,
+  fig.path = '../output/'
+)
+
+theme_set(theme_bw() + theme(legend.position = "bottom"))
+```
+
+## Updates
+
+Updates from last meeting.
+
+
+* Used new dataset
+  * Filtered out lambdoid fusions
+  * **Focused only on individuals with one fusion**   
+* Performed exploratory factor analysis with new data
+  * Tested 4 and 5 factors
+  * Used promax rotation (not orthogonal, allows for correlation between factors)
+  * Visualized relationships between scores from EFA and suture fusion types
+  * When factors are allowed to be correlated variance explained tops out at about 85%
+  * Interpretations aren't exactly the same as what we saw with only sagittal fusions
+* Visualized relationships between scores from factor analysis and key variables of interest (craniosystosis status, sex, image type, fusion type)
+  * Seems likely that regression on the scores will give us good prediction of what type of fusion we have
+  * No notable differences between 3D photogram and CT
+
+
+
+
+## Questions for the team
+
+* How should we categorize patients with multiple fusions?
+* What is the `personalized_normative_reference_head_volume` variable? Can we talk a bit more about how the data I am working with is generated?
+* For the CFA, I am choosing a model with 4 factors to represent each of the different fusion sites. Should I be including patients with no fusion as well? Wouldn't that potentially increase the number of factors?
+* What previous methods did your team use to identify which suture was fused?
+* What is sphenoidal_involvement?
+* What is squamosal_involvement?
+* Are these regions every divided up into sub areas? Would there be any value in that?
+
+
+## Load and clean data
+
+
+First we load and clean the data. The data cleaning steps are as follows:
+
+* Change variable names to lower case and replace " " with "_"
+* For subjects with multiple images, only keep image that is most recent (I am assuming that all images in my dataset were collected before surgery, which means that the most recent image corresponds to the image closest to surgery).
+* Recode sex variable such that ("F" or "Female") is "female" and ("M" or "Male") is "male"
+* Create `craniosynostosis` variable: binary variable (logical) that is TRUE if the patient contains a fusion in any of the regions.
+* Create `image_type` variable (CT or 3D_photogram)
+* Create `multiple_fusions` variable (indicates if subject has more than 1 fusion)
+* Filter out individuals with `squamosal_involvement = 1`
+* Filter out individuals with `sphenoidal_involvement = 1`
+
+We also create a dataset `df_long` which contains the cleaned data where the 12 regions are in long format (this format is better for plotting).
+
+
+
+```{r}
+df = read_excel(here::here("data", "VolumetricResults-8-6-2024.xlsx")) %>%
+  janitor::clean_names() %>%
+  group_by(uid) %>%
+  arrange(-age_at_image_days) %>%
+  slice(1) %>%
+  ungroup() %>%
+  filter(sphenoidal_involvement == 0,
+         squamosal_involvement == 0,
+         left_lambdoid_fused == 0,
+         right_lambdoid_fused == 0) %>%
+  mutate(pt_sex = ifelse(pt_sex %in% c("F", "Female"), "female", "male"),
+         craniosynostosis = sagittal_fused + metopic_fused + right_coronal_fused + 
+           left_coronal_fused,
+          multiple_fusions = (craniosynostosis > 1),
+         craniosynostosis = factor(craniosynostosis > 0),
+         image_type = ifelse(grepl("-", image_identifier), "3D_photogram", "CT")
+         ) %>%
+  select(-contains("lambdoid"))
+  
+
+ 
+df_long = df %>%
+  select(uid, sex = pt_sex, age = age_at_image_days, race = pt_race, head_volume_m_l, 
+         multiple_fusions, craniosynostosis,
+         contains("region"), contains("fused")) %>%
+  pivot_longer(contains("region"), names_to = "region") %>%
+  mutate(region = str_remove(region, "_volume_difference_m_l"),
+         region = str_remove(region, "region_"))
+
+
+```
+
+## Summary statistics
+
+
+Number of subjects with craniosyntosis vs. not,  by image type
+
+
+```{r}
+df %>%
+  select(uid, multiple_fusions, craniosynostosis, image_type) %>%
+  mutate(cranio = case_when(craniosynostosis == FALSE ~ "no fusions",
+                            multiple_fusions == TRUE ~ "multiple fusions",
+                            TRUE~ "one fusion")) %>%
+  group_by(cranio, image_type) %>%
+  summarize(n = n()) %>%
+  ungroup() %>%
+  spread(image_type, n) %>%
+  knitr::kable()
+  
+```
+
+
+## Data cleaning
+
+Filtering out individuals with multiple fusions and create fusion type variable.
+
+```{r}
+df = df %>% filter(multiple_fusions == FALSE) %>%
+  mutate(fusion_type = case_when(craniosynostosis == FALSE ~ "none",
+                                 metopic_fused == 1 ~ "metopic",
+                                 sagittal_fused == 1 ~ "sagittal",
+                                 left_coronal_fused == 1 ~ "left coronal",
+                                 TRUE ~ "right coronal"),
+         fusion_type = factor(fusion_type, levels = c("none", "metopic", "sagittal", "right coronal", 
+                                                      "left coronal"))) 
+
+df_long = df %>%
+  select(uid, sex = pt_sex, age = age_at_image_days, race = pt_race, head_volume_m_l, 
+         fusion_type, craniosynostosis,
+         contains("region")) %>%
+  pivot_longer(contains("region"), names_to = "region") %>%
+  mutate(region = str_remove(region, "_volume_difference_m_l"),
+         region = str_remove(region, "region_"))
+```
+
+
+
+Number of each type of fusion, for individuals with only one fusion. Small number of subjects who only have a lambdoid fusion (TRUE/FALSE).
+
+```{r}
+df %>%
+  select(uid, fusion_type) %>%
+  group_by(fusion_type) %>%
+  summarize(n = n()) %>%
+  ungroup() %>% 
+  knitr::kable() 
+```
+
+
+## Exploratory analysis
+
+Here we visualize the distribution of volume values in each of the 12 regions for patients with and without craniosyntosis and by fusion type.
+
+
+By overall craniosynostosis. 
+
+
+```{r, fig.height=6}
+df_long %>%
+  mutate(region = factor(region, levels = 1:12)) %>%
+  ggplot(aes(craniosynostosis, value, fill = craniosynostosis)) +
+  geom_violin() +
+  facet_wrap(~region, scales = "free", ncol = 3, labeller = label_both)
+```
+
+
+By fusion type
+
+```{r, fig.height=10, fig.width = 10}
+df_long %>%
+  mutate(region = factor(region, levels = c(1:4, 8:9, 10:12, 5:7))) %>%
+    ggplot(aes(fusion_type, value, group = fusion_type, fill = fusion_type)) +
+  geom_violin() +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1),
+         legend.position = "none") +
+  facet_wrap(~region, ncol = 3, labeller = label_both)
+```
+
+
+
+
+## Factor analysis
+
+Goal is to fit the following model (taken from the grant):
+
+
+$$Y = L\Lambda  + E$$
+
+* `Y` are the local volume anomalies
+* `E` is the patient uniqueness
+* `L` are the latent factors
+* `\Lambda` are the loading weights (scores)
+
+
+### Correlations
+
+A correlation matrix of the 12 regions is given below.
+
+
+```{r, fig.width = 12, fig.height = 10}
+df_long %>%
+  select(uid, region, value) %>%
+  pivot_wider(names_from = region, values_from = value, names_prefix = "region_") %>%
+  select(-uid) %>%
+  ggpairs()
+```
+
+
+
+* Regions 1, 2, 3, 4 highly correlated (.7-.9)
+* 8, 9 super highly correlated (.9)
+* 5, 6, 7 moderately correlated (correlation 0.5-.7)
+* 10, 11, 12 moderately correlated (correlation 0.5-.7)
+* Region 10 has small negative correlation with 2, 3
+* No other negative correlations
+
+
+
+
+### EFA
+
+Here I fit an exploratory factor analysis. I used all of the data (controls and those with craniosynostosis).
+Fit an exploratory factor analysis model with 4 factors. How did I decide the best model?
+
+
+We can use a scree plot of the eigenvalues to help determine the appropriate number of factors.  The number of eigenvalues > 1 or the elbow of the plot are two reasonable criteria. 
+
+```{r}
+df_efa = df_long %>%
+  select(uid, region, value) %>%
+  pivot_wider(names_from = region, values_from = value, names_prefix = "region_") %>%
+  select(-uid) 
+
+tibble(eigenvalue = eigen(cor(df_efa))$values,
+       index = 1:12) %>%
+  ggplot(aes(index, eigenvalue)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 1, linetype = 2)
+
+```
+
+Anything in the range 3 to 5 seem reasonable to me. We will try a few.  
+
+
+#### 4 factors
+
+```{r}
+efa_4 <- factanal(x = df_efa, factors = 4, 
+                  rotation = "promax", 
+                  scores = "regression") 
+efa_4
+```
+
+
+#### 5 factors
+
+
+```{r}
+efa_5 <- factanal(x = df_efa, factors = 5, 
+                  rotation = "promax", 
+                  scores = "regression") 
+
+efa_5
+```
+
+
+#### 6 factors
+
+
+```{r}
+efa_6 <- factanal(x = df_efa, factors = 6, 
+                  rotation = "promax", # orthogonal rotation
+                  scores = "regression") 
+
+efa_6
+```
+
+
+
+
+
+### Covariates and factor scores
+
+Choosing 4 factors (5 would also be reasonable)
+
+```{r}
+scores_df = bind_cols(df, as_tibble(efa_4$scores)) %>% 
+  janitor::clean_names() %>%
+  select(uid, sex = pt_sex, image_type, craniosynostosis, fusion_type, contains("factor"))
+```
+
+
+Visualize the relationship between scores and some variables of interest.
+
+
+```{r}
+scores_df %>%
+  pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(craniosynostosis, score, fill = craniosynostosis)) +
+  geom_violin() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by craniosyntosis status")
+```
+
+
+
+
+
+```{r}
+scores_df %>%
+    pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(fusion_type, score, fill = fusion_type)) +
+  geom_boxplot() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by suture fusion type")
+```
+
+
+
+
+```{r}
+scores_df %>%
+  pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(sex, score, fill = sex)) +
+  geom_violin() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by sex")
+```
+
+Also looking by image type. Look pretty similar across factors and image types, which is a good sign.
+
+```{r}
+scores_df %>%
+  pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(image_type, score, fill = image_type)) +
+  geom_violin() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by image type")
+```
+
+
+## Notes 
+
+### 3/7/24
+
+* Take image closest to surgery if there are multiple per person
+* Most patients have one suture fusion, but some have multiple
+
+### 4/5/24
+
+* I will get 12 regions, summarized difference in volume across 12 regions in mm cubed
+* For both normal and abnormal patients
+* Data on 4 cranial sutures that can be fused (0 or 1 to indicated fused or not fused)
+* Right now both PCA and factor analysis will be done on everyone ignoring repeated measures- let’s talk about (later) how we might take repeated measures into account
+
+### 6/4/24
+
+* Do confirmatory analysis
+* Use updated data
+* Concept of including suture fusion status in the model
+  * CT image: regions 11 and 6 likely have error
+* 3D photogram: contains dashes in image_identifier
+* CT: no dash in image_identifier
+
+### 7/29/24
+
+* confirmatory analysis: see Fig 5 for depiction of what Antonio wants for the CFA model
+  * Factors in CFA should be allowed to be correlated, in part to account for the fact that some patients have multiple fusions
+* once you get new data, rerun analysis with all types of suture fusions. May want to consider performing analysis with and without patients who have multiple fusions
+
+## Resources
+
+* https://bookdown.org/sz_psyc490/r4psychometics/factor-analysis.html
+* https://stats.oarc.ucla.edu/r/seminars/rcfa/
+* https://rpubs.com/pjmurphy/758265

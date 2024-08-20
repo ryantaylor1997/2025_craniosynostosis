@@ -1,0 +1,324 @@
+---
+title: "Data processing"
+author: "Julia Wrobel"
+date: '`r format(Sys.time(), "%Y-%m-%d")`'
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+hitheme: tomorrow
+highlighter: highlight.js
+---
+
+## Overview
+
+This document is for data exploration and factor analysis.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(readxl)
+library(patchwork)
+library(GGally)
+library(psych)
+
+
+
+knitr::opts_chunk$set(echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 4,
+  fig.path = '../output/'
+)
+
+theme_set(theme_bw() + theme(legend.position = "bottom"))
+```
+
+## Updates
+
+Updates from last meeting.
+
+* Focused on sagittal fusions only for now, since this has the most error-free data
+  * Results are cleaner and very interpretable 
+* Visualized relationships between scores from factor analysis and key variables of interest (craniosystosis status, sex, image type)
+  * Seems likely that regression on the scores will give us good prediction of phenotype
+
+
+## Questions for the team
+
+* Can we talk about Figure 1 from the grant? For the 2D representation, are regions 1-4 facing forward (the top front of the head)?  My understanding is that for a sagittal fusion those regions would be most likely to be larger than normal, whereas 10-12 and 5-7 are on the sides of the head and would likely be smaller than normal. Is this correct?    
+
+* Should I include both CT scans and 3D photograms, or just one type? Current analysis includes both.
+* Am I using the most up-to-date version of the data? Is there new data?
+* Let's talk through what the CFA model should look like.
+  * What model are we trying to confirm?
+
+
+## Load and clean data
+
+
+First we load and clean the data. The data cleaning steps are as follows:
+
+* Change variable names to lower case and replace " " with "_"
+* For subjects with multiple images, only keep image that is most recent (I am assuming that all images in my dataset were collected before surgery, which means that the most recent image corresponds to the image closest to surgery).
+* Recode sex variable such that ("F" or "Female") is "female" and ("M" or "Male") is "male"
+* Create `craniosynostosis` variable: binary variable (logical) that is TRUE if the patient contains a fusion in any of the regions.
+* Create `image_type` variable (CT or 3D_photogram)
+* Only include patients with a sagittal suture fusion, for now, because this is the largest population and has no registration errors. 
+  * Filtered out patients who had a sagittal suture fusion but other fusions as well
+  * Also included controls with no suture fusion
+
+We also create a dataset `df_long` which contains the cleaned data where the 12 regions are in long format (this format is better for plotting).
+
+
+
+```{r}
+df = read_excel(here::here("data", "VolumetricResults-3-6-2024.xlsx")) %>%
+  janitor::clean_names() %>%
+  group_by(uid) %>%
+  arrange(-age_at_image_days) %>%
+  slice(1) %>%
+  ungroup() %>%
+  mutate(pt_sex = ifelse(pt_sex %in% c("F", "Female"), "female", "male"),
+         craniosynostosis = sagittal_suture_fusion + metopic_suture_fusion + right_coronal_suture_fusion + left_coronal_suture_fusion,
+         craniosynostosis = factor(craniosynostosis > 0),
+         image_type = ifelse(grepl("-", image_identifier), "3D_photogram", "CT")
+         ) %>%
+  filter(craniosynostosis == FALSE | sagittal_suture_fusion == 1,
+         metopic_suture_fusion + right_coronal_suture_fusion + left_coronal_suture_fusion == 0)
+  
+
+ 
+df_long = df %>%
+  select(uid, sex = pt_sex, age = age_at_image_days, race = pt_race, head_volume_m_l, craniosynostosis,
+         contains("region"), contains("fusion")) %>%
+  pivot_longer(contains("region"), names_to = "region") %>%
+  mutate(region = str_remove(region, "_volume_difference_m_l"),
+         region = str_remove(region, "region_"))
+
+
+```
+
+
+The total number of controls (FALSE) and patients with a sagittal fusion (TRUE) is below:
+
+```{r}
+table(df$craniosynostosis)
+```
+
+
+
+## Exploratory analysis
+
+Here we visualize the distribution of volume values in each of the 12 regions for patients with and without craniosyntosis and by fusion type.
+
+
+By overall craniosynostosis. This plot is consistent with my understanding of how the sagittal fusion works.
+
+
+```{r, fig.height=6}
+df_long %>%
+  mutate(region = factor(region, levels = 1:12)) %>%
+  ggplot(aes(craniosynostosis, value, fill = craniosynostosis)) +
+  geom_violin() +
+  facet_wrap(~region, scales = "free", ncol = 3, labeller = label_both)
+```
+
+
+By fusion type
+
+```{r, fig.height=8, fig.width = 10}
+df_long %>%
+  pivot_longer(contains("fusion"), names_to = "suture", values_to = "phenotype") %>%
+  mutate(suture = str_remove(suture, "_suture_fusion"),
+         phenotype = factor(phenotype),
+         region = factor(region, levels = 1:12)) %>%
+    ggplot(aes(suture, value, group = interaction(phenotype, suture), fill = phenotype)) +
+  geom_violin() +
+  facet_wrap(~region, ncol = 3, labeller = label_both)
+```
+
+
+
+
+## Factor analysis
+
+Goal is to fit the following model:
+
+
+$$Y = L\Lambda  + E$$
+
+
+
+### Correlations
+
+A correlation matrix of the 12 regions is given below.
+
+
+```{r, fig.width = 12, fig.height = 10}
+df_long %>%
+  select(uid, region, value) %>%
+  pivot_wider(names_from = region, values_from = value, names_prefix = "region_") %>%
+  select(-uid) %>%
+  ggpairs()
+```
+
+
+
+* Regions 1, 2, 3, 4 highly correlated (.7-.9)
+* 8, 9 super highly correlated (.9)
+* 5, 6, 7 moderately correlated (correlation 0.5-.7)
+* 10, 11, 12 moderately correlated (correlation 0.5-.7)
+* Some smaller negative correlations across side to side vs. front/back regions
+
+
+This could suggest roughly 4 factors.
+
+### EFA
+
+Here I fit an exploratory factor analysis. I used all of the data (controls and those with craniosynostosis).
+Fit an exploratory factor analysis model with 4 factors. How did I decide the best model?
+
+
+We can use a scree plot of the eigenvalues to help determine the appropriate number of factors.  The number of eigenvalues > 1 or the elbow of the plot are two reasonable criteria. 
+
+```{r}
+df_efa = df_long %>%
+  #filter(craniosynostosis == FALSE) %>%
+  select(uid, region, value) %>%
+  pivot_wider(names_from = region, values_from = value, names_prefix = "region_") %>%
+  select(-uid) 
+
+tibble(eigenvalue = eigen(cor(df_efa))$values,
+       index = 1:12) %>%
+  ggplot(aes(index, eigenvalue)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(yintercept = 1, linetype = 2)
+
+```
+
+Anything in the range 4 to 7 seem reasonable to me. We will try a few.  
+
+
+#### 4 factors
+
+```{r}
+
+
+efa_4 <- factanal(x = df_efa, factors = 4, 
+                  rotation = "varimax", # orthogonal rotation
+                  scores = "regression") 
+efa_4
+```
+
+#### 7 factors
+
+```{r}
+efa_7 <- factanal(x = df_efa, factors = 7, 
+                  rotation = "varimax", # orthogonal rotation
+                  scores = "regression") 
+efa_7
+```
+
+
+#### 5 factors
+
+4 seemed more interpretable than 7 factors, so let's look at 5 as well.
+
+
+```{r}
+efa_5 <- factanal(x = df_efa, factors = 5, 
+                  rotation = "varimax", # orthogonal rotation
+                  scores = "regression") 
+
+efa_5
+```
+
+
+```{r}
+broom::tidy(efa_5) %>% 
+  
+  knitr::kable()
+```
+
+
+### Covariates and factor scores
+
+To me, 4 seems more interpretable than 7 factors. 
+
+```{r}
+scores_df = bind_cols(df, as_tibble(efa_5$scores)) %>% 
+  janitor::clean_names() %>%
+  select(uid, sex = pt_sex, race = pt_race, image_type, craniosynostosis, contains("factor"))
+```
+
+
+Visualize the relationship between scores and some variables of interest.
+
+```{r}
+scores_df %>%
+  pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(craniosynostosis, score, fill = craniosynostosis)) +
+  geom_violin() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by craniosyntosis status")
+```
+
+
+```{r}
+scores_df %>%
+  pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(sex, score, fill = sex)) +
+  geom_violin() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by craniosyntosis status")
+```
+
+Also looking by image type. Could be confounded with craniosyntosis status.
+
+```{r}
+scores_df %>%
+  pivot_longer(factor1:factor4, names_to = "factor", values_to = "score") %>%
+  ggplot(aes(image_type, score, fill = image_type)) +
+  geom_violin() +
+  facet_wrap(~factor, nrow = 1) +
+  ggtitle("scores by craniosyntosis status")
+```
+
+
+## Notes 
+
+### 3/7/24
+
+* Take image closest to surgery if there are multiple per person
+* Most patients have one suture fusion, but some have multiple
+
+### 4/5/24
+
+* I will get 12 regions, summarized difference in volume across 12 regions in mm cubed
+* For both normal and abnormal patients
+* Data on 4 cranial sutures that can be fused (0 or 1 to indicated fused or not fused)
+* Right now both PCA and factor analysis will be done on everyone ignoring repeated measures- let’s talk about (later) how we might take repeated measures into account
+
+### 6/4/24
+
+* Do confirmatory analysis
+* Use updated data
+* Concept of including suture fusion status in the model
+  * CT image: regions 11 and 6 likely have error
+* 3D photogram: contains dashes in image_identifier
+* CT: no dash in image_identifier
+
+### 7/29/24
+
+* confirmatory analysis: see Fig 5 for depiction of what Antonio wants for the CFA model
+  * Factors in CFA should be allowed to be correlated, in part to account for the fact that some patients have multiple fusions
+* once you get new data, rerun analysis with all types of suture fusions. May want to consider performing analysis with and without patients who have multiple fusions
+
+## Resources
+
+* https://bookdown.org/sz_psyc490/r4psychometics/factor-analysis.html
+* https://stats.oarc.ucla.edu/r/seminars/rcfa/
+* https://rpubs.com/pjmurphy/758265
