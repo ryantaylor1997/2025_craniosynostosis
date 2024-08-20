@@ -11,3 +11,4 @@ drafts/*_cache/
 .RData
 .Ruserdata
 .DS_Store
+*unnamed*
