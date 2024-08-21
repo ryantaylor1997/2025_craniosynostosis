@@ -21,7 +21,8 @@ library(readxl)
 library(patchwork)
 library(GGally)
 library(psych)
-
+library(lavaan)
+library(lavaanPlot)
 
 
 knitr::opts_chunk$set(echo = TRUE,
@@ -52,6 +53,10 @@ Updates from last meeting.
 * Visualized relationships between scores from factor analysis and key variables of interest (craniosystosis status, sex, image type, fusion type)
   * Seems likely that regression on the scores will give us good prediction of what type of fusion we have
   * No notable differences between 3D photogram and CT
+* Confirmatory factor analysis: started modeling.
+  * Assumed normal distribution in this first fit
+  * Perhaps regions of higher residual variance in the CFA model correspond to areas that are less likely to get mishapen?
+  
 
 
 
@@ -60,11 +65,13 @@ Updates from last meeting.
 
 * How should we categorize patients with multiple fusions?
 * What is the `personalized_normative_reference_head_volume` variable? Can we talk a bit more about how the data I am working with is generated?
-* For the CFA, I am choosing a model with 4 factors to represent each of the different fusion sites. Should I be including patients with no fusion as well? Wouldn't that potentially increase the number of factors?
 * What previous methods did your team use to identify which suture was fused?
+* Can we talk through the arrow structure in Figure 5?
+  * For example, which factors do we expect to be correlated? By default in lavaan, all latent variables are correlated but this can be overridden.
+* Once I have this model in place, would be helpful to know what the next clinical questions we want to answer with this model are. This will help inform the statistical methods we develop.
 * What is sphenoidal_involvement?
 * What is squamosal_involvement?
-* Are these regions every divided up into sub areas? Would there be any value in that?
+
 
 
 ## Load and clean data
@@ -218,7 +225,7 @@ $$Y = L\Lambda  + E$$
 * `Y` are the local volume anomalies
 * `E` is the patient uniqueness
 * `L` are the latent factors
-* `\Lambda` are the loading weights (scores)
+* `$\Lambda$` are the loading weights (scores)
 
 
 ### Correlations
@@ -369,6 +376,91 @@ scores_df %>%
 ```
 
 
+## Confirmatory factor analysis
+
+
+
+### 4 factor CFA
+
+Do we want to name these factors?
+
+```{r}
+cfa_4 <- '
+f1 =~ region_1 + region_2 + region_3 + region_4
+f2 =~ region_5 + region_6 + region_7
+f3 =~ region_8 + region_9
+f4 =~ region_10 + region_11 + region_12
+'
+
+
+fit_cfa4 <- cfa(model = cfa_4, data = df_efa)
+
+```
+
+
+* P-value for Latent Variables is based on Wald Statistic
+* In variance section, dot before observed variable names (because these are dependent variables, predicted by the latent variables)
+  * Says this value is an estimate for the residual variance. Not sure what they mean by that. I guess residual variance left over not explained by a given predictor?
+  * No dot before latent variable names, because they are exogenous variables (no arrows pointing to them) 
+ 
+
+```{r}
+
+summary(fit_cfa4, fit.measures = TRUE)
+```
+
+
+```{r}
+lavaanPlot(fit_cfa4, stand = TRUE, coefs = TRUE)
+```
+
+
+
+### Future potential analyses
+
+* Appears that this model can be fit separately in different groups (craniosynostosis vs. none, by gender), see below for syntax
+  
+```{r, eval = FALSE}
+fit <- cfa(HS.model,
+data = HolzingerSwineford1939,
+group = "school")
+
+```
+ 
+Default estimation is maximum likelihood (ML). Alternative estimators include DWLS, which we included in the grant. There are also options for robust standard errors, which may be a good idea if residuals appear non-normal.
+
+```{r, eval = FALSE}
+fit <- cfa(HS.model,
+           data = HolzingerSwineford1939,
+           estimator = "DWLS")
+
+```
+ 
+
+Extracting information
+
+```{r}
+parameterEstimates(fit_cfa4) %>% head()
+```
+
+```{r, eval = FALSE}
+# returns standardized estimates
+standardizedSolution(fit_cfa4)
+
+# returns residuals
+residuals(fit_cfa4)
+```
+
+
+```{r}
+lavResiduals(fit_cfa4)
+```
+
+
+* Model checking    
+* Extracting score loadings
+* Figuring out exactly how this model is estimated
+
 ## Notes 
 
 ### 3/7/24
@@ -403,3 +495,9 @@ scores_df %>%
 * https://bookdown.org/sz_psyc490/r4psychometics/factor-analysis.html
 * https://stats.oarc.ucla.edu/r/seminars/rcfa/
 * https://rpubs.com/pjmurphy/758265
+
+**CFA**
+
+* [lavaan website](https://lavaan.ugent.be/)
+* [lavaan tutorial](https://lavaan.ugent.be/tutorial.pdf)
+* [lavaan JSS paper](https://www.jstatsoft.org/article/view/v048i02)
