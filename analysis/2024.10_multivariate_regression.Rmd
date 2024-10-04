@@ -1,0 +1,636 @@
+---
+author: "Ryan Taylor"
+date: "`r format(Sys.time(), '%x')`"
+output: 
+  html_document: 
+    theme: paper
+    highlight: haddock
+    code_folding: hide
+    toc: yes
+    toc_float: yes
+header-includes:
+params: 
+  set_title: "10/2024"
+title: "`r paste('Multivariate Regression Analysis:', params$set_title)`"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+
+# Hide warnings and messages in output;
+# Align images in center of page
+knitr::opts_chunk$set(
+  echo = TRUE,
+  fig.align = "center",
+  fig.height = 5,
+  fig.width = 7,
+  include = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  results = 'markup'
+)
+# Clear memory
+rm(list = ls()); gc()
+
+# Set universal options
+options(scipen = 999, # Don't use scientific notation
+        knitr.kable.NA = "" # Hide NA's in printed tables
+)
+
+# Load packages
+if(!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  
+  # Extras
+  pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund, tidyfun, 
+  latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, 
+  table1, gtsummary, ggridges, forestplot,
+  broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary,
+  
+  # Staples
+  DescTools, tidyverse, magrittr, janitor,
+  SASmarkdown, knitr, kableExtra, ggpubr, ggpmisc, stargazer
+)
+
+# Locate SAS for SAS chunks
+saspath <- r"(C:\Program Files\SASHome\x86\SASFoundation\9.4\sas.exe)"
+sasopts <- "-nosplash -ls 75"
+
+# Make it easier to turn answers into rounded text
+PrintNum <- function(x, acc = 0.01, percent = F, vec = F){
+  if(percent){ 
+    y <- scales::label_percent(accuracy = acc)(x)
+  } else {
+    y <- scales::label_number(accuracy = acc)(x)
+  }
+  if(vec)( y <- paste0("(",
+                       paste(y, collapse = ", "),
+                       ")"))
+  return(y)
+}
+
+# knitr::opts_chunk$set(engine="saspdf", engine.path=saspath)
+
+# knitr::opts_chunk$set(engine="R", engine.path=NULL)
+# *** Use and include chunk header ', engine = "R"'
+
+# setwd()
+```
+
+# Overview
+
+This document records the methods and results of a multivariate regression analysis on the Volumetric Craniosynostosis data.
+
+## Updates
+* Age is correlated with head volume, but not with volume differences.
+* Our understanding of the preprocessing involved with the volume differences is mostly correct, but not exactly.
+  + I don't think any of the papers we've been sent describe the 12 regions.
+* Residuals are highly correlated with original volume differences, but do not look like they are correlated with any of the other variables we have in our data.
+
+## Still to do
+* Conduct F tests on predictors
+* Write summary of predictors and covariances
+  
+# Questions for the team
+
+## Internal
+
+* Why are errors so strongly correlated with the original data?
+  + Is there a way to reflect some kind of non-linear relationship?
+* Would it make any sense to use percent difference from the normative reference head volume to control for any metrics associated with the normal head volume?
+  + We would need each patient's normative head region volumes
+
+## Collaborators
+
+* How is each region's volume difference calculated?
+* How is age incorporated into the personalized normative reference head volume? The paper potentially suggests it is incorporated as a quadratic term?
+  + Why was PCA used to calculate normative reference head volume? Are these based on / do they line up with anatomical regions?
+  + When in the process are volumes projected? Are they converted back to volumes in order to calculate the volume differences?
+
+# Load and clean data
+
+First we load the data for the analysis. All of the data is stored in the "Volumetric Results-8-6-2024" Excel file.
+
+We create a clean column indicating the category of suture that we will use in our categorical predictor variable. If a patient has both left coronal and right coronal sutures, we classify them as "Bicoronal." If they have another combination of multiple sutures, we classify them as "multiple," and eventually exclude them. If they have no sutures, we classify them as "No suture." Otherwise, we classify them based on the single suture they have.
+
+```{r load data}
+here::i_am("analysis/2024.09.27 Meeting Doc.Rmd")
+
+# File saved in "data" folder one level above repo
+cranio_raw <- read_xlsx(here::here("../data/VolumetricResults-8-6-2024.xlsx"))
+
+cranio <- cranio_raw %>% clean_names() 
+
+sut <- cranio %>% select(matches("fused")) %>% 
+  mutate(i = 1:n()) %>% 
+  pivot_longer(cols = -i) %>%
+  mutate(suture = if_else(value == 1, name, NA_character_)) %>% 
+  group_by(i) %>% 
+  summarize(sutures = paste(na.omit(suture), collapse = "/")) %>% 
+  ungroup() %>% 
+  arrange(i)
+
+cranio %<>% 
+  bind_cols(sut %>% select(sutures)) %>% 
+  mutate(num_sutures = rowSums(select(., matches("fused"))),
+         suture_type = case_when(num_sutures = 2 & 
+                                   left_coronal_fused == 1 & 
+                                   right_coronal_fused == 1 ~ "bicoronal",
+                                 num_sutures > 1 ~ "multiple",
+                                 num_sutures == 0 ~ "no_suture",
+                                 T ~ sutures)) %>% 
+  mutate(suture_type = str_remove_all(suture_type, "_fused"))
+```
+
+# Summaries for data cleaning
+
+Our data's observations are at the image level. Our first task is to summarize the frequency of one individual patient having multiple pictures. We use the "UID" column to identify individual patients.
+
+```{r data summ}
+# Summarize counts
+cran_summ <- cranio %>% 
+  summarize(rows = n(),
+            pics = n_distinct(image_identifier),
+            patients = n_distinct(uid))
+
+kable(cran_summ, caption = "All pictures and patients")
+
+# Multiple pictures
+multi_pic <- cranio %>% 
+  arrange(uid, age_at_image_days) %>% 
+  group_by(uid, suture_type) %>% 
+  mutate(days_diff = age_at_image_days - lag(age_at_image_days, 1)) %>% 
+  summarize(pics = n(),
+            avg_day_diff = mean(days_diff, na.rm = T)) %>% 
+  ungroup() %>% 
+  group_by(pics, suture_type) %>% 
+  summarize(patients = n_distinct(uid),
+            avg_days_between = weighted.mean(avg_day_diff, pics)) %>% 
+  ungroup() %>% 
+  arrange(desc(pics))
+
+kable(multi_pic, caption = "Repeat Visits")
+```
+
+Next, we summarize the frequency of different suture types in the data. We also summarize the specific types of multiple sutures, and investigate whether there are any patients whose diagnosis changes over time.
+
+```{r suture types}
+# Suture types
+sut_type <- cranio %>% 
+  group_by(suture_type) %>% 
+  summarize(pics = n(),
+            patients = n_distinct(uid)) %>% 
+  ungroup() %>% 
+  arrange(desc(pics)) %>% 
+  mutate(pats_included = if_else(suture_type %in% c("multiple", "right_lambdoid", "left_lambdoid"), 0, patients)) %>% 
+  adorn_totals("row")
+
+kable(sut_type, caption = "Suture Representation")
+
+# Multiple sutures
+
+multi_sut <- cranio %>% 
+  filter(suture_type == "multiple") %>% 
+  group_by(sutures) %>% 
+  summarize(pics = n(),
+            patients = n_distinct(uid)) %>% 
+  ungroup() %>% 
+  arrange(desc(pics))
+
+kable(multi_sut, caption = "Multiple Sutures (Exc.) Bicoronal")
+
+# Changes within patient
+patient <- cranio %>% 
+  arrange(uid, age_at_image_days) %>% 
+  group_by(uid) %>% 
+  summarize(pics = n(),
+            suture_prog = paste(na.omit(unique(suture_type)))) %>% 
+  ungroup() %>% 
+  group_by(suture_prog) %>% 
+  summarize(pics = sum(pics),
+            patients = n()) %>% 
+  ungroup() %>% 
+  arrange(desc(pics))
+
+kable(patient, caption = "Patient Progressions: No Changes in Diagnosis")
+```
+
+# Data cleaning
+
+Based on these summaries, there are some rare categories of data that we should exclude to reduce the variability of the data.
+
+We use one image from each patient, which we choose as the last image taken for each patient. We also exclude multiple sutures and lambdoid sutures.
+
+```{r clean data}
+# Filter to regression subset
+cranio_reg <- cranio %>% 
+  # Exclude rare sutures
+  filter(!suture_type %in% c("multiple", "left_lambdoid", "right_lambdoid")) %>% 
+  # Filter to one picture per patient
+  arrange(uid, age_at_image_days) %>% 
+  group_by(uid) %>% 
+  slice_tail(n=1) %>% 
+  ungroup() %>% 
+  mutate(suture_type = factor(suture_type, levels = sut_type$suture_type))
+```
+
+# Data investigation
+
+With this clean data, we perform some summaries to ensure that we understand the preprocessing on the data.
+
+First, we calculate the sum of volume differences for each patient across all 12 regions and compare this to the difference between the head volume and personalized normative reference head volume.
+
+These two metrics are very similar, but not exact, so we might not understand how the 12 regions' volumes are being calculated exactly, but for now we will proceed with the interpretation that each region's volume difference is subtracting that region's volume in the personalized normative reference head from that region's volume in the individual's head. Because of this, we will not include head volume in the model.
+
+```{r head volume check}
+
+vol_check <- cranio_reg %>% 
+  mutate(vol_diff_sum = rowSums(select(., matches("region"))),
+         vol_diff_sing = head_volume_m_l - personalized_normative_reference_head_volume_m_l)
+
+ggplot(vol_check, aes(x = vol_diff_sing, y = vol_diff_sum)) +
+  geom_point(aes(color = suture_type), alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "blue") +
+  stat_poly_eq()
+
+```
+
+# Clean Summary statistics
+
+With the cleaned data, we start with a Table 1 displaying information about the infants in our sample.
+
+```{r table 1}
+demo_table <- table1::table1(~ 
+                               image_type + pt_sex + pt_race + pt_ethnicity + 
+                               age_at_image_days + head_volume_m_l + 
+                               personalized_normative_reference_head_volume_m_l | suture_type,
+                             data = cranio_reg)
+
+demo_table
+```
+
+Next, we summarize the dependent variables: volume differences by region.
+
+```{r vol ridge}
+
+vol_ridge <- cranio_reg %>% 
+  select(matches("region")) %>% 
+  pivot_longer(cols = everything()) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric() %>% as.factor()) %>% 
+  ggplot(aes(x=value, y=region_num, fill=region_num)) +
+  geom_density_ridges() +
+  labs(title = "Volume Difference Distributions")
+
+vol_ridge
+```
+
+Since a ridge plot reveals long-tailed distributions, we also present jittered points and a boxplot to give a better idea of each region's frequency of outliers.
+
+```{r vol box}
+vol_box <- cranio_reg %>% 
+  select(matches("region")) %>% 
+  pivot_longer(cols = everything()) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric() %>% as.factor()) %>% 
+  ggplot(aes(x=value, y=region_num, fill=region_num)) +
+  geom_jitter(width=0.1, alpha = 0.25) +
+  geom_boxplot() +
+  labs(title = "Volume Difference Distributions")
+
+vol_box
+```
+
+Then, we investigate demographic variables in the data that could be associated with head volumes. There is a roughly logarithmic association between age and overall head volume, but this relationship appears to be captured in the normative head volumes. Patient sex appears to have very little additional effect on head volume. 
+
+```{r age plot}
+
+cranio_reg %>% 
+  filter(age_at_image_days > 0) %>% 
+  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ log(x)) +
+  scale_color_viridis_d(option = "turbo")
+
+cranio_reg %>% 
+  pivot_longer(cols = c(matches("region"))) %>% 
+  filter(age_at_image_days > 0) %>% 
+  ggplot(aes(x = age_at_image_days, y = value)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ log(x)) +
+  facet_wrap(~name) +
+  scale_color_viridis_d(option = "turbo")
+
+cranio_reg %>% 
+  filter(age_at_image_days <= 365) %>% 
+  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "< 1 Year Only")
+
+cranio_reg %>% 
+  filter(age_at_image_days > 0 & !is.na(pt_sex)) %>% 
+  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ log(x)) +
+  facet_wrap(~pt_sex, nrow = 1) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Controlling for Sex")
+
+```
+
+
+
+## Multivariate Regression
+
+Next, we run a multivariate regression to find the association between the 12 regions' volume differences in a given patient with that patient's suture type.
+
+```{r reg}
+vol_reg <- lm(
+  formula(paste("cbind(",
+                paste(
+                  paste0("region_", 1:12, "_volume_difference_m_l"),
+                  collapse = ", "),
+                ") ~ ", "suture_type")),
+          data = cranio_reg
+)
+```
+
+The results from this model are presented in the table below.
+
+```{r beta table}
+
+beta_tbl <- broom::tidy(vol_reg)
+
+lm_stats <- distinct(beta_tbl, response) %>% 
+  mutate(rse = purrr::map_dbl(1:length(summary(vol_reg)),
+                                ~summary(vol_reg)[.][[1]]$sigma),
+         r_2 = purrr::map_dbl(1:length(summary(vol_reg)),
+                                ~summary(vol_reg)[.][[1]]$r.squared),
+         adj_r_2 = purrr::map_dbl(1:length(summary(vol_reg)),
+                                ~summary(vol_reg)[.][[1]]$adj.r.squared))
+
+beta_tbl %<>% left_join(lm_stats) %>% 
+  select(response, rse, r_2, adj_r_2, everything()) %>% 
+  mutate(low_95 = estimate - 1.96*std.error,
+         high_95 = estimate + 1.96*std.error,
+         region_num = str_extract(response, "[0-9]+") %>% as.numeric(),
+         clean_var = str_remove_all(term, "suture_type"),
+         term_name = paste0(region_num, ": ", clean_var))
+
+forestplot(beta_tbl, mean = estimate, lower = low_95, upper = high_95, labeltext = term_name)
+
+kable(lm_stats, caption = "Model Performance Statistics")
+```
+
+
+We create a brain shape to plot the results on top of the region map:
+```{r brain shape}
+
+knitr::include_graphics(here::here("../Literature/Region_Diagram.png"))
+
+# Manually define center points of regions
+brain_points <- tribble(
+  ~region, ~x, ~y,
+  1, 1, 7,
+  2, 2, 8, 
+  3, 3, 8,
+  4, 4, 7,
+  5, 4, 5,
+  6, 3, 4, 
+  7, 4, 3,
+  8, 3, 1,
+  9, 2, 1,
+  10, 1, 3,
+  11, 2, 4,
+  12, 1, 5
+) %>% 
+  st_as_sf(coords = c("x", "y"), remove = F)
+
+# Create shapes around these points
+g = st_combine(st_geometry(brain_points)) # make multipoint
+v = st_voronoi(g)
+v = st_collection_extract(v)
+
+# Add region numbers
+brain_shapes <- v[unlist(st_intersects(brain_points, v))] %>% 
+  st_as_sf() %>% 
+  mutate(region_num = 1:n())
+
+# Create circle
+brain_circle <- tibble(x = 2.5, y = 4.5) %>% 
+  st_as_sf(coords = c("x", "y")) %>% 
+  st_buffer(4.5)
+
+brain_shapes <- st_intersection(brain_shapes, brain_circle)
+
+ggplot() + 
+  geom_sf(data = brain_shapes) + 
+  geom_sf_label(data = brain_shapes, aes(label = region_num))
+```
+
+Next, we plot the coefficients on the map of the brain regions.
+
+```{r coeffs}
+# Extract and clean coefficients
+reg_coeffs <- coefficients(vol_reg) %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  pivot_longer(-rowname) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric(),
+         suture_clean = str_remove_all(rowname, "suture_type") %>% 
+           str_replace_all("_", " ") %>% 
+           str_remove_all("\\(|\\)") %>% 
+           str_to_title()) %>% 
+  left_join(brain_shapes) %>% 
+  st_as_sf()
+
+# Plot coefficients
+coeff_plot <- ggplot() +
+  geom_sf(data = reg_coeffs, aes(fill = value)) +
+  geom_sf_text(data = reg_coeffs, aes(label = region_num)) +
+  facet_wrap(~suture_clean) +
+  scale_fill_viridis_c(option = "turbo")
+
+coeff_plot
+```
+
+## Model Diagnostics
+
+Next, we check the shape of the residuals.
+
+```{r residuals}
+# Plot residual distributions
+resid_df <- vol_reg$residuals %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  pivot_longer(-rowname, values_to = "resid")
+
+vols_df <- cranio_reg %>% 
+  select(c(matches("region"), pt_sex, age_at_image_days, suture_type, pt_race, pt_ethnicity)) %>% 
+  mutate(rowname = as.character(1:n())) %>% 
+  pivot_longer(cols = matches("region"), values_to = "vol_diff")
+
+resid_df %<>%
+  full_join(vols_df) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% 
+           as.numeric() %>% as.factor())
+
+resid_ridge <- ggplot(resid_df, 
+                     aes(x = resid, y = region_num, fill = region_num)) +
+  geom_density_ridges() +
+  labs(title = "Residuals by Region")
+
+resid_box <- ggplot(resid_df, 
+                     aes(x = resid, y = region_num, fill = region_num)) +
+  geom_jitter(width=0.1, alpha = 0.25) +
+  geom_boxplot() +
+  labs(title = "Residuals by Region")
+
+resid_ridge
+resid_box
+
+```
+
+We then plot the residuals against their corresponding original volume differences. This shows that we are not picking up a substantial amount of variance.
+
+```{r resid vs data}
+resid_df %>% 
+  ggplot(aes(x = vol_diff, y = resid)) +
+  geom_point() +
+  facet_wrap(~region_num) +
+  labs(title = "Residuals against Volume Differences")
+```
+
+We also plot the residuals against variables in the model and other demographic variables. However, none of these variables appear to be correlated with the residuals.
+
+```{r resid vs vars}
+resid_df %>% 
+  ggplot(aes(x = age_at_image_days, y = resid)) +
+  geom_point() +
+  facet_wrap(~region_num) +
+  labs(title = "Age")
+
+resid_df %>% 
+  ggplot(aes(x = suture_type, y = resid)) +
+  geom_boxplot() +
+  facet_wrap(~region_num) +
+  labs(title = "Suture") +
+  theme(axis.text.x = element_text(angle = 90))
+
+resid_df %>% 
+  filter(!is.na(pt_sex)) %>% 
+  ggplot(aes(x = pt_sex, y = resid)) +
+  geom_boxplot() +
+  facet_wrap(~region_num) +
+  labs(title = "Sex")
+
+resid_df %>% 
+  ggplot(aes(x = pt_race, y = resid)) +
+  geom_boxplot() +
+  facet_wrap(~region_num) +
+  labs(title = "Race") +
+  theme(axis.text.x = element_text(angle = 90))
+
+resid_df %>% 
+  ggplot(aes(x = pt_ethnicity, y = resid)) +
+  geom_boxplot() +
+  facet_wrap(~region_num) +
+  labs(title = "Ethnicity") +
+  theme(axis.text.x = element_text(angle = 90))
+```
+
+We also plot the covariance matrices of the volume differences and the residuals.
+
+```{r cov matrices}
+
+Y <- vol_reg$model[[1]]
+
+# Volumes
+for(s in unique(cranio_reg$suture_type)){
+  s_set <- which(cranio_reg$suture_type == s)
+  
+  cov_y <- cov(Y[s_set,]) %>% 
+    as.data.frame() %>% 
+    rownames_to_column() %>% 
+    pivot_longer(cols = -rowname) %>% 
+    mutate(across(c(rowname, name), 
+                  ~str_extract(., "[0-9]+") %>% as.numeric() %>% as.factor()))
+  
+  cov_resid <- cov(vol_reg$residuals[s_set,]) %>% 
+    as.data.frame() %>% 
+    rownames_to_column() %>% 
+    pivot_longer(cols = -rowname) %>% 
+    mutate(across(c(rowname, name), 
+                  ~str_extract(., "[0-9]+") %>% as.numeric() %>% as.factor()))
+  
+  cy <- ggplot(cov_y) + 
+    geom_tile(aes(x = name, y = rowname, fill = value)) +
+    scale_fill_viridis_c(option = "turbo") +
+    scale_y_discrete(limits = rev) +
+    labs(title = paste("Volume Covariance:", s))
+  
+  cr <- ggplot(cov_resid) + 
+    geom_tile(aes(x = name, y = rowname, fill = value)) +
+    scale_fill_viridis_c(option = "turbo") +
+    scale_y_discrete(limits = rev) +
+    labs(title = paste("Residual Covariance:", s))
+  
+  print(cy)
+  print(cr)
+}
+
+```
+
+We plot the covariances of coefficients within each suture type. 
+
+```{r cov} 
+# Plot covariances
+cov_mx <- vcov(vol_reg) %>% 
+  as.data.frame() %>% 
+  rownames_to_column() %>% 
+  pivot_longer(-rowname, names_to = "colname") %>% 
+  mutate(region_num_1 = str_extract(rowname, "[0-9]+") %>% 
+           as.numeric() %>% as.factor(),
+         region_num_2 = str_extract(colname, "[0-9]+") %>% 
+           as.numeric() %>% as.factor(),
+         variable_1 = str_match(rowname, "\\:(.*)")[,2] %>% 
+           str_remove_all("suture_type") %>% 
+           str_replace_all("_", " ") %>% 
+           str_remove_all("\\(|\\)") %>% 
+           str_to_title(),
+         variable_2 = str_match(colname, "\\:(.*)")[,2] %>%  
+           str_remove_all("suture_type") %>% 
+           str_replace_all("_", " ") %>% 
+           str_remove_all("\\(|\\)") %>% 
+           str_to_title()
+         )
+
+cov_mx_suture <- cov_mx %>% 
+  filter(variable_1 == variable_2 &
+           variable_1 != "Intercept")
+
+cov_plot_suture <- ggplot(cov_mx_suture) +
+  geom_tile(aes(x = region_num_1, y = region_num_2, fill = value)) +
+  facet_wrap(~variable_1) +
+  scale_fill_viridis_c(option = "turbo") +
+  scale_y_discrete(limits = rev)
+
+cov_plot_suture
+```
+
+We plot the covariance matrix of all coefficients in the model.
+
+```{r all cov}
+# All covariances
+cov_mx_all <- cov_mx %>% 
+  mutate(across(c(variable_1, variable_2),
+                ~if_else(. == "Intercept", "_Intercept", .))) %>% 
+  mutate(id_1 = paste0(str_pad(region_num_1, 2, "left"), "_", variable_1),
+         id_2 = paste0(str_pad(region_num_2, 2, "left"), "_", variable_2))
+
+ggplot(cov_mx_all) +
+  geom_tile(aes(x = id_1, y = id_2, fill = value)) +
+  scale_fill_viridis_c(option = "turbo") +
+  scale_y_discrete(limits = rev) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
