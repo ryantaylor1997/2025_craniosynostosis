@@ -44,7 +44,7 @@ pacman::p_load(
   
   # Extras
   pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund, tidyfun, 
-  latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, 
+  latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, MASS,
   table1, gtsummary, ggridges, forestplot,
   broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary,
   
@@ -86,7 +86,9 @@ This document records the methods and results of a multivariate regression analy
 * Age is correlated with head volume, but not with volume differences.
 * Our understanding of the preprocessing involved with the volume differences is mostly correct, but not exactly.
   + I don't think any of the papers we've been sent describe the 12 regions.
+* Overall Head Volume and overall Reference Head Volume are only somewhat correlated with volume differences, and are not very significant in the model
 * Residuals are highly correlated with original volume differences, but do not look like they are correlated with any of the other variables we have in our data.
+* I ran a robust regression for each region, but I'm not sure what in those results we want to see
 
 ## Still to do
 * Conduct F tests on predictors
@@ -99,7 +101,7 @@ This document records the methods and results of a multivariate regression analy
 * Why are errors so strongly correlated with the original data?
   + Is there a way to reflect some kind of non-linear relationship?
 * Would it make any sense to use percent difference from the normative reference head volume to control for any metrics associated with the normal head volume?
-  + We would need each patient's normative head region volumes
+  + We would need each patient's normative head *region* volumes
 
 ## Collaborators
 
@@ -252,8 +254,27 @@ vol_check <- cranio_reg %>%
 ggplot(vol_check, aes(x = vol_diff_sing, y = vol_diff_sum)) +
   geom_point(aes(color = suture_type), alpha = 0.5) +
   geom_abline(slope = 1, intercept = 0, color = "blue") +
-  stat_poly_eq()
+  stat_poly_eq() +
+  scale_color_viridis_d(option = "turbo")
+```
 
+We show more details of this calculation using two similar images of metopic patients, both of which have differences between the sum of region-level differences and their overall difference.
+
+```{r vol check steps}
+
+vol_obs <- vol_check %>% 
+  filter(suture_type == "metopic" & between(vol_diff_sum, 50, 150) & between(vol_diff_sing, 150, 250)) %>% 
+  select(image_identifier, head_volume_m_l, personalized_normative_reference_head_volume_m_l,
+         matches("region"), suture_type) %>% 
+  pivot_longer(cols = matches("region"),
+               names_to = "region", values_to = "vol_diff") %>% 
+  group_by(image_identifier) %>% 
+  mutate(cum_diff = cumsum(vol_diff),
+         cum_abs_diff = cumsum(abs(vol_diff))) %>% 
+  ungroup() %>% 
+  mutate(overall_diff = head_volume_m_l - personalized_normative_reference_head_volume_m_l)
+
+kable(vol_obs)
 ```
 
 # Clean Summary statistics
@@ -300,57 +321,103 @@ vol_box <- cranio_reg %>%
 vol_box
 ```
 
-Then, we investigate demographic variables in the data that could be associated with head volumes. There is a roughly logarithmic association between age and overall head volume, but this relationship appears to be captured in the normative head volumes. Patient sex appears to have very little additional effect on head volume. 
+Then, we investigate demographic variables in the data that could be associated with region volume differences. There is a roughly logarithmic association between age and overall head volume, but this relationship appears to be captured in the normative head volumes. Patient sex appears to have very little additional effect on head volume. 
 
 ```{r age plot}
 
+# Age vs overall head volume
 cranio_reg %>% 
   filter(age_at_image_days > 0) %>% 
   ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
   geom_smooth(formula = y ~ log(x)) +
-  scale_color_viridis_d(option = "turbo")
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Age vs Overall Volume")
 
+# Age vs volume differences
 cranio_reg %>% 
   pivot_longer(cols = c(matches("region"))) %>% 
   filter(age_at_image_days > 0) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric()) %>% 
   ggplot(aes(x = age_at_image_days, y = value)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
-  geom_smooth(formula = y ~ log(x)) +
-  facet_wrap(~name) +
-  scale_color_viridis_d(option = "turbo")
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  facet_wrap(~region_num) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Age vs Region Volume Differences")
 
+# Age vs reference volume
+
+cranio_reg %>% 
+  filter(age_at_image_days > 0) %>% 
+  ggplot(aes(x = age_at_image_days, y = personalized_normative_reference_head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ log(x)) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Age vs Overall Reference Volume")
+
+# Overall Volume vs Reference Volume
+cranio_reg %>% 
+  filter(age_at_image_days > 0) %>% 
+  ggplot(aes(x = head_volume_m_l, y = personalized_normative_reference_head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Actual Volume vs Overall Reference Volume")
+
+# Overall volume vs Volume differences
+cranio_reg %>% 
+  pivot_longer(cols = c(matches("region"))) %>% 
+  filter(age_at_image_days > 0) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric()) %>% 
+  ggplot(aes(x = head_volume_m_l, y = value)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  facet_wrap(~region_num) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Overall Volume vs Region Volume Differences")
+
+# Reference volume vs Volume differences
+cranio_reg %>% 
+  pivot_longer(cols = c(matches("region"))) %>% 
+  filter(age_at_image_days > 0) %>% 
+  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric()) %>% 
+  ggplot(aes(x = personalized_normative_reference_head_volume_m_l, y = value)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  facet_wrap(~region_num) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Reference Volume vs Region Volume Differences")
+
+# Age vs volume < 1 yr
 cranio_reg %>% 
   filter(age_at_image_days <= 365) %>% 
   ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
   scale_color_viridis_d(option = "turbo") +
-  labs(title = "< 1 Year Only")
-
-cranio_reg %>% 
-  filter(age_at_image_days > 0 & !is.na(pt_sex)) %>% 
-  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
-  geom_point(aes(color = suture_type), alpha = 0.25) +
-  geom_smooth(formula = y ~ log(x)) +
-  facet_wrap(~pt_sex, nrow = 1) +
-  scale_color_viridis_d(option = "turbo") +
-  labs(title = "Controlling for Sex")
+  labs(title = "Age vs Overall Volume, < 1 Year Only")
 
 ```
 
 
-
-## Multivariate Regression
+# Multivariate Regression
 
 Next, we run a multivariate regression to find the association between the 12 regions' volume differences in a given patient with that patient's suture type.
 
 ```{r reg}
+
+cranio_reg %<>%
+  mutate(head_volume_m_l_std = scale(head_volume_m_l))
+
 vol_reg <- lm(
   formula(paste("cbind(",
                 paste(
                   paste0("region_", 1:12, "_volume_difference_m_l"),
                   collapse = ", "),
-                ") ~ ", "suture_type")),
+                ") ~ ", "suture_type + head_volume_m_l_std")),
           data = cranio_reg
 )
 ```
@@ -378,6 +445,9 @@ beta_tbl %<>% left_join(lm_stats) %>%
          term_name = paste0(region_num, ": ", clean_var))
 
 forestplot(beta_tbl, mean = estimate, lower = low_95, upper = high_95, labeltext = term_name)
+
+forestplot(beta_tbl %>% arrange(clean_var), 
+           mean = estimate, lower = low_95, upper = high_95, labeltext = term_name)
 
 kable(lm_stats, caption = "Model Performance Statistics")
 ```
@@ -454,7 +524,7 @@ coeff_plot <- ggplot() +
 coeff_plot
 ```
 
-## Model Diagnostics
+# Model Diagnostics
 
 Next, we check the shape of the residuals.
 
@@ -466,7 +536,9 @@ resid_df <- vol_reg$residuals %>%
   pivot_longer(-rowname, values_to = "resid")
 
 vols_df <- cranio_reg %>% 
-  select(c(matches("region"), pt_sex, age_at_image_days, suture_type, pt_race, pt_ethnicity)) %>% 
+  select(c(matches("region"), pt_sex, age_at_image_days, 
+           suture_type, pt_race, pt_ethnicity,
+           head_volume_m_l, personalized_normative_reference_head_volume_m_l)) %>% 
   mutate(rowname = as.character(1:n())) %>% 
   pivot_longer(cols = matches("region"), values_to = "vol_diff")
 
@@ -508,7 +580,22 @@ resid_df %>%
   ggplot(aes(x = age_at_image_days, y = resid)) +
   geom_point() +
   facet_wrap(~region_num) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
   labs(title = "Age")
+
+resid_df %>% 
+  ggplot(aes(x = head_volume_m_l, y = resid)) +
+  geom_point() +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  facet_wrap(~region_num) +
+  labs(title = "Head Volume")
+
+resid_df %>% 
+  ggplot(aes(x = personalized_normative_reference_head_volume_m_l, y = resid)) +
+  geom_point() +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  facet_wrap(~region_num) +
+  labs(title = "Reference Head Volume")
 
 resid_df %>% 
   ggplot(aes(x = suture_type, y = resid)) +
@@ -634,3 +721,27 @@ ggplot(cov_mx_all) +
   scale_y_discrete(limits = rev) +
   theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
 ```
+
+## Robust Regressions
+
+```{r robust}
+
+cranio_reg_rob <- cranio_reg %>% 
+  mutate(suture_type = as.character(suture_type))
+
+rob_list <- list()
+
+for(r in 1:12){
+  
+  rob <- rlm(
+    formula(paste0("region_", r, "_volume_difference_m_l",
+                   " ~ ", "suture_type")),
+    data = cranio_reg_rob
+  )
+  
+  rob_list[[r]] <- rob
+  
+}
+
+```
+
