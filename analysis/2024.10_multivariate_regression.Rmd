@@ -10,7 +10,7 @@ output:
     toc_float: yes
 header-includes:
 params: 
-  set_title: "10/2024"
+  set_title: "11/2024"
 title: "`r paste('Multivariate Regression Analysis:', params$set_title)`"
 editor_options: 
   chunk_output_type: console
@@ -117,7 +117,7 @@ First we load the data for the analysis. All of the data is stored in the "Volum
 We create a clean column indicating the category of suture that we will use in our categorical predictor variable. If a patient has both left coronal and right coronal sutures, we classify them as "Bicoronal." If they have another combination of multiple sutures, we classify them as "multiple," and eventually exclude them. If they have no sutures, we classify them as "No suture." Otherwise, we classify them based on the single suture they have.
 
 ```{r load data}
-here::i_am("analysis/2024.09.27 Meeting Doc.Rmd")
+here::i_am("analysis/2024.10_multivariate_regression.Rmd")
 
 # File saved in "data" folder one level above repo
 cranio_raw <- read_xlsx(here::here("../data/VolumetricResults-8-6-2024.xlsx"))
@@ -258,25 +258,6 @@ ggplot(vol_check, aes(x = vol_diff_sing, y = vol_diff_sum)) +
   scale_color_viridis_d(option = "turbo")
 ```
 
-We show more details of this calculation using two similar images of metopic patients, both of which have differences between the sum of region-level differences and their overall difference.
-
-```{r vol check steps}
-
-vol_obs <- vol_check %>% 
-  filter(suture_type == "metopic" & between(vol_diff_sum, 50, 150) & between(vol_diff_sing, 150, 250)) %>% 
-  select(image_identifier, head_volume_m_l, personalized_normative_reference_head_volume_m_l,
-         matches("region"), suture_type) %>% 
-  pivot_longer(cols = matches("region"),
-               names_to = "region", values_to = "vol_diff") %>% 
-  group_by(image_identifier) %>% 
-  mutate(cum_diff = cumsum(vol_diff),
-         cum_abs_diff = cumsum(abs(vol_diff))) %>% 
-  ungroup() %>% 
-  mutate(overall_diff = head_volume_m_l - personalized_normative_reference_head_volume_m_l)
-
-kable(vol_obs)
-```
-
 # Clean Summary statistics
 
 With the cleaned data, we start with a Table 1 displaying information about the infants in our sample.
@@ -335,6 +316,38 @@ cranio_reg %>%
   scale_color_viridis_d(option = "turbo") +
   labs(title = "Age vs Overall Volume")
 
+# Age vs reference volume
+
+cranio_reg %>% 
+  filter(age_at_image_days > 0) %>% 
+  ggplot(aes(x = age_at_image_days, y = personalized_normative_reference_head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ log(x)) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Age vs Overall Reference Volume")
+
+# Age vs Overall Difference
+
+cranio_reg %>% 
+  filter(age_at_image_days > 0) %>% 
+  ggplot(aes(x = age_at_image_days, y = (head_volume_m_l - personalized_normative_reference_head_volume_m_l))) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ log(x)) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Age vs Overall - Reference Volume")
+
+# Age vs overall volume < 1 yr
+cranio_reg %>% 
+  filter(age_at_image_days <= 365) %>% 
+  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
+  geom_point(aes(color = suture_type), alpha = 0.25) +
+  geom_smooth(formula = y ~ x) +
+  stat_cor(digits = 2, p.accuracy = 0.001) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(title = "Age vs Overall Volume, < 1 Year Only")
+
 # Age vs volume differences
 cranio_reg %>% 
   pivot_longer(cols = c(matches("region"))) %>% 
@@ -346,17 +359,6 @@ cranio_reg %>%
   facet_wrap(~region_num) +
   scale_color_viridis_d(option = "turbo") +
   labs(title = "Age vs Region Volume Differences")
-
-# Age vs reference volume
-
-cranio_reg %>% 
-  filter(age_at_image_days > 0) %>% 
-  ggplot(aes(x = age_at_image_days, y = personalized_normative_reference_head_volume_m_l)) +
-  geom_point(aes(color = suture_type), alpha = 0.25) +
-  geom_smooth(formula = y ~ log(x)) +
-  stat_cor(digits = 2, p.accuracy = 0.001) +
-  scale_color_viridis_d(option = "turbo") +
-  labs(title = "Age vs Overall Reference Volume")
 
 # Overall Volume vs Reference Volume
 cranio_reg %>% 
@@ -390,15 +392,6 @@ cranio_reg %>%
   facet_wrap(~region_num) +
   scale_color_viridis_d(option = "turbo") +
   labs(title = "Reference Volume vs Region Volume Differences")
-
-# Age vs volume < 1 yr
-cranio_reg %>% 
-  filter(age_at_image_days <= 365) %>% 
-  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
-  geom_point(aes(color = suture_type), alpha = 0.25) +
-  stat_cor(digits = 2, p.accuracy = 0.001) +
-  scale_color_viridis_d(option = "turbo") +
-  labs(title = "Age vs Overall Volume, < 1 Year Only")
 
 ```
 
