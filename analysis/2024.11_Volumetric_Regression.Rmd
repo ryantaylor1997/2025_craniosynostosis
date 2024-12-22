@@ -72,7 +72,7 @@ if(!require("pacman")) install.packages("pacman")
 pacman::p_load(
   
   # Extras
-  pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund, tidyfun, 
+  pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund,
   latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, MASS,
   table1, gtsummary, ggridges, forestplot,
   broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary,

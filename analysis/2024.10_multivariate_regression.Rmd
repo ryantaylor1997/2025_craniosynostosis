@@ -45,8 +45,8 @@ pacman::p_load(
   # Extras
   pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund, tidyfun, 
   latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, MASS,
-  table1, gtsummary, ggridges, forestplot,
-  broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary,
+  table1, gtsummary, ggridges, forestplot, mgcv,
+  broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary, itsadug,
   
   # Staples
   DescTools, tidyverse, magrittr, janitor,
@@ -83,8 +83,7 @@ PrintNum <- function(x, acc = 0.01, percent = F, vec = F){
 This document records the methods and results of a multivariate regression analysis on the Volumetric Craniosynostosis data.
 
 ## Updates
-* I added sex, age, and image type to the multivariate model
-* I replaced overall head volume with overall *difference* between actual head volume and reference head volume
+* Scaled total head volume and age in both models
 * I ran separate autoregressive models for the 12 regions, using only the repeated patients
 
 ## Still to do
@@ -94,10 +93,7 @@ This document records the methods and results of a multivariate regression analy
 
 ## Internal
 
-* Is there a way to use patients who only had one picture in our autoregressive model?
-  + Would we use any kind of prediction from the multivariate model?
 * For the multivariate model, when we do have multiple observations, we are currently selecting the last. Does that still make sense?
-* In a previous document, I ran robust regressions. Would those still be useful to look at?
 
 ## Collaborators
 
@@ -117,7 +113,13 @@ here::i_am("analysis/2024.10_multivariate_regression.Rmd")
 # File saved in "data" folder one level above repo
 cranio_raw <- read_xlsx(here::here("../data/VolumetricResults-8-6-2024.xlsx"))
 
-cranio <- cranio_raw %>% clean_names() 
+cranio <- cranio_raw %>% clean_names() %>% 
+  rename(head_vol = head_volume_m_l,
+         ref_head_vol = personalized_normative_reference_head_volume_m_l,
+         age = age_at_image_days) %>% 
+  rename_with(.cols = matches("volume_difference"), 
+              ~str_replace(., "volume_difference_m_l", "vol_dev") %>% 
+                str_replace("region", "reg"))
 
 sut <- cranio %>% select(matches("fused")) %>% 
   mutate(i = 1:n()) %>% 
@@ -160,9 +162,9 @@ kable(cran_summ, caption = "All pictures and patients") %>%
 ```{r mult}
 # Multiple pictures
 multi_pic <- cranio %>% 
-  arrange(uid, age_at_image_days) %>% 
+  arrange(uid, age) %>% 
   group_by(uid, suture_type) %>% 
-  mutate(days_diff = age_at_image_days - lag(age_at_image_days, 1)) %>% 
+  mutate(days_diff = age - lag(age, 1)) %>% 
   summarize(pics = n(),
             avg_day_diff = mean(days_diff, na.rm = T)) %>% 
   ungroup() %>% 
@@ -207,16 +209,16 @@ Finally, we summarize the distribution of age in the dataset. Over half of the d
 
 ```{r age dist}
 cranio %>% 
-  ggplot(aes(x = age_at_image_days)) +
+  ggplot(aes(x = age)) +
   geom_density(fill = "blue", alpha = 0.25) +
-  scale_x_continuous(breaks = seq(0,3650, 365), limits = c(0, max(cranio$age_at_image_days)))
+  scale_x_continuous(breaks = seq(0,3650, 365), limits = c(0, max(cranio$age)))
 
 cranio %>% 
-  ggplot(aes(x = age_at_image_days)) +
+  ggplot(aes(x = age)) +
   geom_step(stat = "ecdf") +
   geom_vline(xintercept = 365, color = "blue") +
-  geom_hline(yintercept = ecdf(cranio$age_at_image_days)(365), color = "blue") +
-  scale_x_continuous(breaks = seq(0,3650, 365), limits = c(0, max(cranio$age_at_image_days)))
+  geom_hline(yintercept = ecdf(cranio$age)(365), color = "blue") +
+  scale_x_continuous(breaks = seq(0,3650, 365), limits = c(0, max(cranio$age)))
 ```
 
 # Data cleaning
@@ -227,19 +229,21 @@ We use one image from each patient, which we choose as the last image taken for 
 
 ```{r clean data}
 
+cranio %<>%
+  mutate(vol_dev_sum = rowSums(select(., matches("reg_"))),
+         vol_dev_head = head_vol - ref_head_vol)
+
 # Filter to regression subset
 cranio_sub <- cranio %>% 
   # Exclude rare sutures
   filter(!suture_type %in% c("multiple", "left_lambdoid", "right_lambdoid") &
-           age_at_image_days <= 365 &
-           !is.na(pt_sex) & !is.na(age_at_image_days)) %>% 
-  mutate(vol_diff_sum = rowSums(select(., matches("region"))),
-         vol_diff_overall = head_volume_m_l - personalized_normative_reference_head_volume_m_l)
+           age <= 365 &
+           !is.na(pt_sex) & !is.na(age))
 
 # Format for cross-sectional multivariate reg
 cranio_reg <- cranio_sub %>% 
   # Filter to one picture per patient
-  arrange(uid, age_at_image_days) %>% 
+  arrange(uid, age) %>% 
   group_by(uid) %>% 
   slice_tail(n=1) %>% 
   ungroup() %>% 
@@ -261,7 +265,7 @@ First, we calculate the sum of volume differences for each patient across all 12
 
 ```{r head volume check}
 
-ggplot(cranio_reg, aes(x = vol_diff_overall, y = vol_diff_sum)) +
+ggplot(cranio_reg, aes(x = vol_dev_head, y = vol_dev_sum)) +
   geom_point(aes(color = suture_type), alpha = 0.5) +
   geom_abline(slope = 1, intercept = 0, color = "blue") +
   stat_poly_eq() +
@@ -277,8 +281,8 @@ With the cleaned data, we start with a Table 1 displaying information about the 
 ```{r table 1}
 demo_table <- table1::table1(~ 
                                image_type + pt_sex + pt_race + pt_ethnicity + 
-                               age_at_image_days + head_volume_m_l + 
-                               personalized_normative_reference_head_volume_m_l | suture_type,
+                               age + head_vol + 
+                               ref_head_vol | suture_type,
                              data = cranio_reg)
 
 demo_table
@@ -289,21 +293,21 @@ Next, we summarize the dependent variables: volume differences by region.
 ```{r vol ridge}
 
 vol_ridge <- cranio_reg %>% 
-  select(matches("region")) %>% 
+  select(matches("reg_")) %>% 
   pivot_longer(cols = everything()) %>% 
   mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric() %>% as.factor()) %>% 
   ggplot(aes(x=value, y=region_num, fill=region_num)) +
   geom_density_ridges() +
-  labs(title = "Volume Difference Distributions")
+  labs(title = "Volume Deviation Distributions")
 
 vol_box <- cranio_reg %>% 
-  select(matches("region")) %>% 
+  select(matches("reg_")) %>% 
   pivot_longer(cols = everything()) %>% 
   mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric() %>% as.factor()) %>% 
   ggplot(aes(x=value, y=region_num, fill=region_num)) +
   geom_jitter(width=0.1, alpha = 0.25) +
   geom_boxplot() +
-  labs(title = "Volume Difference Distributions")
+  labs(title = "Volume Deviation Distributions")
 
 vol_ridge | vol_box
 ```
@@ -314,10 +318,10 @@ Then, we investigate how age could be associated with region volume differences.
 
 # Age vs overall head volume
 age_hv <- cranio_reg %>% 
-  filter(age_at_image_days > 0) %>% 
-  ggplot(aes(x = age_at_image_days, y = head_volume_m_l)) +
+  filter(age > 0) %>% 
+  ggplot(aes(x = age, y = head_vol)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
-  geom_smooth(formula = y ~ log(x)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) +
   stat_cor(digits = 2, p.accuracy = 0.001) +
   scale_color_viridis_d(option = "turbo") +
   labs(title = "Age vs Overall Volume",
@@ -326,10 +330,10 @@ age_hv <- cranio_reg %>%
 
 # Age vs reference volume
 age_rv <- cranio_reg %>% 
-  filter(age_at_image_days > 0) %>% 
-  ggplot(aes(x = age_at_image_days, y = personalized_normative_reference_head_volume_m_l)) +
+  filter(age > 0) %>% 
+  ggplot(aes(x = age, y = ref_head_vol)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
-  geom_smooth(formula = y ~ log(x)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) +
   stat_cor(digits = 2, p.accuracy = 0.001) +
   scale_color_viridis_d(option = "turbo") +
   labs(title = "Age vs Overall Reference Volume",
@@ -339,10 +343,10 @@ age_rv <- cranio_reg %>%
 # Age vs Overall Difference
 
 age_diff <- cranio_reg %>% 
-  filter(age_at_image_days > 0) %>% 
-  ggplot(aes(x = age_at_image_days, y = (head_volume_m_l - personalized_normative_reference_head_volume_m_l))) +
+  filter(age > 0) %>% 
+  ggplot(aes(x = age, y = vol_dev_head)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
-  geom_smooth(formula = y ~ log(x)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, bs = "cs")) +
   stat_cor(digits = 2, p.accuracy = 0.001) +
   scale_color_viridis_d(option = "turbo") +
   labs(title = "Age vs Overall - Reference Volume",
@@ -351,8 +355,8 @@ age_diff <- cranio_reg %>%
 
 # Overall Volume vs Reference Volume
 vol_comp <- cranio_reg %>% 
-  filter(age_at_image_days > 0) %>% 
-  ggplot(aes(x = head_volume_m_l, y = personalized_normative_reference_head_volume_m_l)) +
+  filter(age > 0) %>% 
+  ggplot(aes(x = head_vol, y = ref_head_vol)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
   stat_cor(digits = 2, p.accuracy = 0.001) +
   scale_color_viridis_d(option = "turbo") +
@@ -362,10 +366,10 @@ vol_comp <- cranio_reg %>%
 
 # Age vs volume differences
 age_y <- cranio_reg %>% 
-  pivot_longer(cols = c(matches("region"))) %>% 
-  filter(age_at_image_days > 0) %>% 
+  pivot_longer(cols = c(matches("reg_"))) %>% 
+  filter(age > 0) %>% 
   mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric()) %>% 
-  ggplot(aes(x = age_at_image_days, y = value)) +
+  ggplot(aes(x = age, y = value)) +
   geom_point(aes(color = suture_type), alpha = 0.25) +
   stat_cor(digits = 2, p.accuracy = 0.001) +
   facet_wrap(~region_num) +
@@ -392,25 +396,26 @@ cranio_fusion_vars <- cranio_reg %>%
   names()
 
 # Preserve means and sd's for AR model later
-cranio_reg_scales <- cranio_reg %>% 
-  summarize(across(c(head_volume_m_l, vol_diff_overall, age_at_image_days),
+cranio_scale <- cranio_reg %>% 
+  summarize(across(c(head_vol, vol_dev_head, age),
                    .fns = list("mean" = ~mean(., na.rm = T),
                                "sd" = ~sd(., na.rm = T))))
 
 # Center variables
 cranio_reg %<>%
-  mutate(across(c(head_volume_m_l, vol_diff_overall, age_at_image_days),
-                ~scale(., scale = F),
-                .names = "{.col}_ctr"))
+  mutate(across(c(head_vol, vol_dev_head, age),
+                ~ ( . - cranio_scale[[paste0(cur_column(), "_mean")]][1]) / 
+                  cranio_scale[[paste0(cur_column(), "_sd")]][1],
+                .names = "{.col}_std"))
 
 reg_form <- formula(paste("cbind(",
                           paste(
-                            paste0("region_", 1:12, "_volume_difference_m_l"),
+                            paste0("reg_", 1:12, "_vol_dev"),
                             collapse = ", "),
                           ") ~ ", 
                           paste(cranio_fusion_vars, collapse = " + "), 
                           " + right_coronal_fused * left_coronal_fused",
-                          " + vol_diff_overall + image_type + pt_sex + age_at_image_days_ctr"))
+                          " + vol_dev_head_std + image_type + pt_sex + age_std"))
 
 vol_reg <- lm(reg_form, data = cranio_reg)
 ```
@@ -421,7 +426,27 @@ The results from this model are presented in the table below.
 
 beta_tbl <- broom::tidy(vol_reg)
 
-lm_stats <- distinct(beta_tbl, response) %>% 
+# Add bicoronal rows
+
+bicoronal_tbl <- beta_tbl %>% 
+  filter(str_detect(term, "coronal")) %>% 
+  group_by(response) %>% 
+  summarize(estimate = sum(estimate),
+            std.error = sqrt(sum(std.error^2))) %>% 
+  ungroup() %>% 
+  mutate(statistic = estimate / std.error,
+         p.value = pnorm(-abs(statistic)),
+         term = "bicoronal")
+
+coeff_tbl <- beta_tbl %>% 
+  filter(str_detect(term, "fused")) %>% 
+  bind_rows(bicoronal_tbl) %>% 
+  bind_rows(beta_tbl %>% filter(!str_detect(term, "fused"))) %>% 
+  mutate(region_num = str_extract(response, "[0-9]+") %>% 
+           as.numeric()) %>% 
+  arrange(region_num)
+
+lm_stats <- distinct(coeff_tbl, region_num) %>% 
   mutate(rse = purrr::map_dbl(1:length(summary(vol_reg)),
                               ~summary(vol_reg)[.][[1]]$sigma),
          r_2 = purrr::map_dbl(1:length(summary(vol_reg)),
@@ -429,7 +454,7 @@ lm_stats <- distinct(beta_tbl, response) %>%
          adj_r_2 = purrr::map_dbl(1:length(summary(vol_reg)),
                                   ~summary(vol_reg)[.][[1]]$adj.r.squared))
 
-beta_tbl %<>% left_join(lm_stats) %>% 
+coeff_tbl %<>% left_join(lm_stats) %>% 
   select(response, rse, r_2, adj_r_2, everything()) %>% 
   mutate(low_95 = estimate - 1.96*std.error,
          high_95 = estimate + 1.96*std.error,
@@ -439,10 +464,11 @@ beta_tbl %<>% left_join(lm_stats) %>%
 
 lm_stats_k <- lm_stats
 
-lm_stats_k$r_2 <- cell_spec(round(lm_stats$r_2, 3), color = "gray", bold = T, 
+lm_stats_k$r_2 <- cell_spec(round(lm_stats$r_2, 3), 
+                            color = "black", bold = T, 
                           background = spec_color(lm_stats$r_2, option = "turbo", 
                                                   scale_from = c(0,1)))
-lm_stats_k$adj_r_2 <- cell_spec(round(lm_stats$adj_r_2, 3), color = "gray", bold = T, 
+lm_stats_k$adj_r_2 <- cell_spec(round(lm_stats$adj_r_2, 3), color = "black", bold = T, 
                               background = spec_color(lm_stats$adj_r_2, option = "turbo", 
                                                   scale_from = c(0,1)))
 
@@ -498,39 +524,38 @@ Next, we plot the coefficients on the map of the brain regions.
 ```{r coeffs}
 
 # Extract and clean coefficients
-reg_coeffs <- coefficients(vol_reg) %>% 
-  as.data.frame() %>% 
-  rownames_to_column() %>% 
-  pivot_longer(-rowname) %>% 
-  mutate(region_num = str_extract(name, "[0-9]+") %>% as.numeric(),
-         var_clean = str_remove_all(rowname, "_fused") %>% 
+reg_coeffs <- coeff_tbl %>% 
+  mutate(var_clean = str_remove_all(term, "_fused") %>% 
            str_replace_all("_", " ") %>% 
            str_remove_all("\\(|\\)") %>% 
            str_to_title()) %>%
   mutate(var_clean = case_match(var_clean,
-                                "Vol Diff Overall Ctr" ~ "Actual - Ref", 
+                                "Vol Dev Head Std" ~ "Actual - Ref (Std.)", 
                                 "Image Typect" ~ "CT vs 3D",
                                 "Pt Sexmale" ~ "Sex: Male",
-                                "Age At Image Days Ctr" ~ "Age",
-                                "Left Coronal:right Coronal" ~ "Bicoronal",
+                                "Age Std" ~ "Age (Std.)",
                                 .default = var_clean)) %>% 
   mutate(var_clean = fct_inorder(var_clean)) %>% 
   left_join(brain_shapes) %>% 
   st_as_sf()
 
+# Filter out bicoronal interaction term
+reg_coeffs %<>% 
+  filter(!term %in% c("left_coronal_fused:right_coronal_fused"))
+
 # Plot coefficients
 coeff_plot <- ggplot() +
-  geom_sf(data = reg_coeffs, aes(fill = value)) +
+  geom_sf(data = reg_coeffs, aes(fill = estimate)) +
   geom_sf_text(data = st_centroid(reg_coeffs), aes(label = region_num)) +
   facet_wrap(~var_clean, nrow = 2) +
   scale_fill_viridis_c(option = "turbo", 
-                       limits = (c(-1, 1) * max(abs(reg_coeffs$value)))) +
-  labs(x = "", y = "", fill = "Estimate", title = "Expected Volume Differences by Suture Type")
+                       limits = (c(-1, 1) * max(abs(reg_coeffs$estimate)))) +
+  labs(x = "", y = "", fill = "Estimate", title = "Expected Volume Deviations by Suture Type")
 
 coeff_plot
 ```
 
-# Model Diagnostics
+## Model Diagnostics
 
 Next, we check the shape of the residuals.
 
@@ -542,11 +567,11 @@ resid_df <- vol_reg$residuals %>%
   pivot_longer(-rowname, values_to = "resid")
 
 vols_df <- cranio_reg %>% 
-  select(c(matches("region"), pt_sex, age_at_image_days, 
+  select(c(matches("reg_"), pt_sex, age, 
            suture_type, pt_race, pt_ethnicity,
-           head_volume_m_l, personalized_normative_reference_head_volume_m_l)) %>% 
+           head_vol, ref_head_vol)) %>% 
   mutate(rowname = as.character(1:n())) %>% 
-  pivot_longer(cols = matches("region"), values_to = "vol_diff")
+  pivot_longer(cols = matches("reg_"), values_to = "vol_dev")
 
 resid_df %<>%
   full_join(vols_df) %>% 
@@ -569,7 +594,7 @@ resid_ridge | resid_box
 ```
 
 
-We also plot the correlation matrices of the volume differences and the brain shapes of the residual correlations.
+We also plot the correlation matrices of the volume differences and the brain shapes of the residual correlations. Our model currently assumes that every observation's residuals follow the same distribution, but we observe that there is a different pattern in the residuals depending on the suture type.
 
 ```{r cov matrices, results = 'hide', fig.dim = c(15, 15)}
 
@@ -705,24 +730,27 @@ We run a model that only includes the (107) observations that are a repeated mea
 First, we make a 2-dimensional histogram of time since previous picture and change in volume difference since previous picture.
 
 ```{r ar data, fig.dim = c(15, 15)}
+
 cranio_ar <- cranio_sub %>% 
-  arrange(uid, age_at_image_days) %>% 
+  arrange(uid, age) %>% 
   group_by(uid) %>% 
-  mutate(across(c(age_at_image_days, matches("region")),
+  mutate(across(c(age, vol_dev_head, matches("reg_")),
                 .fns = list("prev" = ~lag(., 1),
-                            "prev_diff" = ~ . - lag(., 1)))) %>% 
-  ungroup()
+                            "diff" = ~ . - lag(., 1)))) %>% 
+  ungroup() %>% 
+  filter(!is.na(age_prev))
 
 cranio_ar_p_l <- list()
 
 for(i in 1:12){
   cranio_ar_p_l[[i]] <- cranio_ar %>% 
-    select(age = age_at_image_days_prev_diff, vol_diff := !!sym(paste0("region_", i, "_volume_difference_m_l_prev_diff"))) %>% 
-    filter(age <= 365) %>% 
-    ggplot(aes(x = age, y = vol_diff)) +
+    select(age_diff, vol_diff := !!sym(paste0("reg_", i, "_vol_dev_diff"))) %>% 
+    filter(age_diff <= 365) %>% 
+    ggplot(aes(x = age_diff, y = vol_diff)) +
     geom_bin_2d(binwidth = c(30, 5)) +
     scale_fill_viridis_c(option = "turbo", trans = "log", labels = scales::label_number(accuracy = 1)) +
-    labs(title = paste0("Region ", i))
+    labs(title = paste0("Reg. ", i, " Count"),
+         x = "Time Change", y = "Change in Volume Difference")
 }
 
 wrap_plots(cranio_ar_p_l)
@@ -734,7 +762,10 @@ Next, we run 12 separate auto-regressive models for the 12 regions. We include e
 
 # Center age variable
 cranio_ar %<>%
-  mutate(age_at_image_days_ctr = age_at_image_days - cranio_reg_scales$age_at_image_days_mean[1])
+  mutate(across(c(head_vol, vol_dev_head, age),
+                ~ ( . - cranio_scale[[paste0(cur_column(), "_mean")]][1]) / 
+                  cranio_scale[[paste0(cur_column(), "_sd")]][1],
+                .names = "{.col}_std"))
 
 ar_list <- list()
 
@@ -742,21 +773,58 @@ ar_coeffs <- NULL
 
 for(i in 1:12){
   
+  cranio_i <- cranio_ar %>% 
+                      rename(vol_dev_prev := !!sym(paste0("reg_", i, "_vol_dev_prev")))
+  
   reg_form_ar <- formula(
-    paste0("region_", i, "_volume_difference_m_l ~ 
+    paste0("reg_", i, "_vol_dev ~ 0 +
                     metopic_fused + sagittal_fused + left_coronal_fused + right_coronal_fused + 
-                    right_coronal_fused * left_coronal_fused + vol_diff_overall + 
-                    image_type + pt_sex + age_at_image_days_ctr +
-                    ti(age_at_image_days_prev_diff, region_", i, "_volume_difference_m_l_prev)"))
+                    right_coronal_fused * left_coronal_fused + 
+                    image_type + pt_sex + age_std + vol_dev_head_prev +
+                    ti(age_diff, vol_dev_prev)"))
   
-  ar_i <- mgcv::gam(reg_form_ar, data = cranio_ar)
+  reg_form_te <- formula(
+    paste0("reg_", i, "_vol_dev ~ 0 +
+                    metopic_fused + sagittal_fused + left_coronal_fused + right_coronal_fused + 
+                    right_coronal_fused * left_coronal_fused + 
+                    image_type + pt_sex + age_std + vol_dev_head_prev +
+                    te(age_diff, vol_dev_prev)"))
   
-  ar_list[[i]] <- ar_i
+  reg_form_prev <- formula(
+    paste0("reg_", i, "_vol_dev ~ 0 +
+                    metopic_fused + sagittal_fused + left_coronal_fused + right_coronal_fused + 
+                    right_coronal_fused * left_coronal_fused + 
+                    image_type + pt_sex + age_std + vol_dev_head_prev + vol_dev_prev"))
   
-  ar_coeffs %<>% bind_rows(
-    broom::tidy(coef(ar_i)) %>% 
-      mutate(region_num = i)
-    )
+  reg_form_no_ar <- formula(
+    paste0("reg_", i, "_vol_dev ~ 0 +
+                    metopic_fused + sagittal_fused + left_coronal_fused + right_coronal_fused + 
+                    right_coronal_fused * left_coronal_fused + 
+                    image_type + pt_sex + age_std"))
+  
+  # Run AR model
+  ar_i <- mgcv::gam(reg_form_ar, 
+                    data = cranio_i)
+  
+  ar_list[[i]][["ar_ti"]] <- ar_i
+  
+  # Run TE model
+  ar_e_i <- mgcv::gam(reg_form_te, 
+                      data = cranio_i)
+  
+  ar_list[[i]][["ar_te"]] <- ar_e_i
+  
+  # Run linear previous model
+  prev_i <- lm(reg_form_prev, 
+               data = cranio_i)
+  
+  ar_list[[i]][["prev"]] <- prev_i
+  
+  # Run linear previous model
+  noar_i <- lm(reg_form_no_ar, 
+               data = cranio_i)
+  
+  ar_list[[i]][["lin"]] <- noar_i
   
 }
 ```
@@ -766,29 +834,25 @@ for(i in 1:12){
 ```{r ar performance}
 
 ### Create model performance statistics
-ar_stats <- distinct(ar_coeffs, region_num) %>% 
-  mutate(dev = purrr::map_dbl(1:length(ar_list),
-                              ~ar_list[[.]]$deviance),
-         null_dev = purrr::map_dbl(1:length(ar_list),
-                              ~ar_list[[.]]$null.deviance)) %>% 
-  mutate(pct_dev = 1 - dev / null_dev)
+ar_stats <- tibble(region_num  = 1:12) %>% 
+  mutate(adj_r_sq = purrr::map_dbl(1:length(ar_list),
+                                   ~summary(ar_list[[.]])$r.sq))
 
-ar_stats_k <- ar_stats %>% 
-  select(region_num, pct_dev)
+ar_stats_k <- ar_stats
 
-ar_stats_k$pct_dev <- cell_spec(round(ar_stats$pct_dev, 3), color = "gray", bold = T, 
-                          background = spec_color(ar_stats$pct_dev, option = "turbo", 
-                                                  scale_from = c(0,1)))
+ar_stats_k$adj_r_sq <- cell_spec(round(ar_stats$adj_r_sq, 3), color = "black", bold = T, 
+                                 background = spec_color(ar_stats$adj_r_sq, option = "turbo", 
+                                                         scale_from = c(0,1)))
 
 ar_stats_k$orig_adj_r_2 <- lm_stats_k$adj_r_2
 
 kbl(ar_stats_k, 
     caption = "AR Model Deviance", digits = 3,
-    col.names = c("Region", "Pct. Deviance", "Linear Adj R Sq."), escape = F) %>% 
+    col.names = c("Region", "AR Adj. R Sq.", "Linear Adj. R Sq."), escape = F) %>% 
   kable_styling(full_width = F)
 ```
 
-On the limited set of repeat observations, the AR model performs similarly to the multivariate model.
+On the limited set of repeat observations, the AR model performs somewhat worse than the explanatory model.
 
 ```{r ar coeffs}
 
@@ -800,10 +864,9 @@ ar_coeffs_shp <- ar_coeffs %>%
            str_remove_all("\\(|\\)") %>% 
            str_to_title()) %>%
   mutate(var_clean = case_match(var_clean,
-                                "Vol Diff Overall Ctr" ~ "Actual - Ref", 
                                 "Image Typect" ~ "CT vs 3D",
                                 "Pt Sexmale" ~ "Sex: Male",
-                                "Age At Image Days Ctr" ~ "Age",
+                                "Age Std" ~ "Age",
                                 "Left Coronal:right Coronal" ~ "Bicoronal",
                                 .default = var_clean)) %>% 
   mutate(var_clean = fct_inorder(var_clean)) %>% 
@@ -824,3 +887,236 @@ coeff_plot_ar
 ```
 
 Coefficients from these models do not have as neat a pattern as they did in the multivariate case.
+
+We plot contour plots from the splines included to model the effect of previous region-specific volume deviation from the reference head and previous overall volume deviation from the reference head, interacted with time since previous visit.
+
+## Spline Interpretation
+
+```{r gam plots}
+
+# https://r.qcbs.ca/workshop08/pres-en/workshop08-pres-en.html#1
+
+for(j in 1:length(ar_list)){
+  
+  print(
+    wrap_elements( panel = ~vis.gam(
+      ar_list[[j]],
+      view = c("age_diff", "vol_dev_prev"),
+      plot.type = "contour",
+      type = "response",
+      color = "topo",
+      main = "Age * Prev Region"
+    )) + plot_annotation(title = paste("Region", j))
+  )
+}
+
+```
+
+
+```{r gam predictions}
+
+# Define size of prediction combinations
+pred_grid_n <- 10
+
+# Add temporary row to initialize
+predict_settings <- tibble(temp = c(1:pred_grid_n))
+
+# Add columns of previous outcomes
+for(i in 1:12){
+  predict_settings %<>% 
+    mutate(!!sym(paste0("reg_", i, 
+                        "_vol_dev_prev")) := seq(from = min(cranio_ar[[paste0("reg_", i, "_vol_dev_prev")]], na.rm = T), 
+                                                 to = max(cranio_ar[[paste0("reg_", i, "_vol_dev_prev")]], na.rm = T), 
+                                                 length.out = pred_grid_n))
+}
+
+# Add other columns
+# Variables observed at previous visit
+predict_settings %<>% 
+  mutate(
+  vol_dev_head_prev = seq(from = min(cranio_ar$vol_dev_head_prev, na.rm = T),
+                          to = max(cranio_ar$vol_dev_head_prev, na.rm = T),
+                          length.out = pred_grid_n)
+) %>%
+  # Variables not dependent on previous observation
+  mutate(
+  metopic_fused = 0,
+  sagittal_fused = 0,
+  left_coronal_fused = 0,
+  right_coronal_fused = 0,
+  vol_diff_overall = 0,
+  image_type = "CT",
+  pt_sex = "Male",
+  age_std = 0) %>% 
+  # Time since previous visit
+  mutate(
+    age_diff = list(seq(from = min(cranio_ar$age_diff, na.rm = T),
+                        to = max(cranio_ar$age_diff, na.rm = T), length.out = pred_grid_n))
+  ) %>% 
+  # Expand grid
+  unnest_longer(age_diff)
+```
+
+```{r gam predict plots}
+ar_pred_1 <- data.frame(predict(ar_list[[1]], 
+                                newdata = predict_settings %>% 
+                                  rename(vol_dev_prev = reg_1_vol_dev_prev), 
+                                type = "terms", se.fit = T)) %>% 
+  rename(ti_age_region = fit.ti.age_diff.vol_dev_prev.,
+         ti_age_region_se = se.fit.ti.age_diff.vol_dev_prev.) %>% 
+  mutate(ti_age_region_sig = ti_age_region / ti_age_region_se) %>% 
+  bind_cols(predict_settings %>% select(matches("prev|diff")))
+
+pred_1 <- ggplot(ar_pred_1, aes(x = age_diff, 
+            y = reg_1_vol_dev_prev, 
+            fill = ti_age_region_sig)) + 
+  geom_tile() +
+  scale_fill_viridis_c(option = "turbo") +
+  geom_text(aes(label = round(ti_age_region_sig, 2)))
+
+pred_1
+
+ar_pred_1_lp <- predict(ar_list[[1]], 
+                        newdata = predict_settings %>% 
+                                  rename(vol_dev_prev = reg_1_vol_dev_prev), 
+                        type = "lpmatrix") %*%
+  matrix(ar_list[[1]]$coefficients) %>% 
+  bind_cols(predict_settings %>% select(matches("prev|diff"))) %>% 
+  rename(ti_terms = `...1`)
+
+pred_2 <- ggplot(ar_pred_1_lp) + 
+  geom_tile(aes(x = age_diff, 
+            y = reg_1_vol_dev_prev, 
+            fill = ti_terms)) +
+  scale_fill_viridis_c(option = "turbo")
+
+ar_pred_3 <- data.frame(predict(ar_list[[1]], 
+                                newdata = predict_settings %>% 
+                                  rename(vol_dev_prev = reg_1_vol_dev_prev), 
+                                type = "response")) %>% 
+  rename(ti_age_reg = last_col()) %>% 
+  bind_cols(predict_settings %>% select(matches("prev|diff")))
+
+pred_3 <- ggplot(ar_pred_1) + 
+  geom_tile(aes(x = age_diff, 
+            y = reg_1_vol_dev_prev, 
+            fill = ti_age_reg)) +
+  scale_fill_viridis_c(option = "turbo")
+
+pred_1
+```
+
+## TE Model
+
+```{r ar model te}
+
+ar_list_te <- list()
+
+ar_coeffs_te <- NULL
+
+for(i in 1:12){
+  
+  reg_form_ar_te <- formula(
+    paste0("reg_", i, "_vol_dev ~ 
+                    metopic_fused + sagittal_fused + left_coronal_fused + right_coronal_fused + 
+                    right_coronal_fused * left_coronal_fused + 
+                    image_type + pt_sex + age_std + vol_dev_head_prev +
+                    te(age_diff, vol_dev_prev)"))
+  
+  ar_i <- mgcv::gam(reg_form_ar_te, 
+                    data = cranio_ar %>% 
+                      rename(vol_dev_prev := !!sym(paste0("reg_", i, "_vol_dev_prev"))))
+  
+  ar_list_te[[i]] <- ar_i
+  
+  ar_coeffs_te %<>% bind_rows(
+    broom::tidy(coef(ar_i)) %>% 
+      mutate(region_num = i)
+    )
+  
+}
+```
+
+### AR TE Performance
+
+```{r ar te performance}
+
+### Create model performance statistics
+ar_stats_te <- distinct(ar_coeffs_te, region_num) %>% 
+  mutate(adj_r_sq = purrr::map_dbl(1:length(ar_list_te),
+                                   ~summary(ar_list_te[[.]])$r.sq))
+
+ar_stats_k_te <- ar_stats_te
+
+ar_stats_k_te$adj_r_sq <- cell_spec(round(ar_stats_te$adj_r_sq, 3), color = "black", bold = T, 
+                                 background = spec_color(ar_stats_te$adj_r_sq, option = "turbo", 
+                                                         scale_from = c(0,1)))
+
+ar_stats_k_te$ti_adj_r_2 <- ar_stats_k$adj_r_sq
+
+ar_stats_k_te$orig_adj_r_2 <- ar_stats_k$orig_adj_r_2
+
+kbl(ar_stats_k_te, 
+    caption = "AR Model Deviance", digits = 3,
+    col.names = c("Region", "AR TE Adj. R Sq.", "AR TI Adj. R Sq.", "Linear Adj. R Sq."), escape = F) %>% 
+  kable_styling(full_width = F)
+```
+
+### AR TE Spline Interpretation
+
+```{r gam plots te}
+
+# https://r.qcbs.ca/workshop08/pres-en/workshop08-pres-en.html#1
+
+for(j in 1:length(ar_list_te)){
+  
+  print(
+    wrap_elements(panel = ~fvisgam(
+      ar_list_te[[j]],
+      view = c("age_diff", "vol_dev_prev"),
+      plot.type = "contour",
+      type = "response",
+      color = "topo",
+      main = "Age * Prev Region",
+      drawlabels = TRUE
+    )) + plot_annotation(title = paste("Region", j))
+  )
+}
+
+```
+
+# Combined AR Model
+
+```{r combo df}
+
+#metopic_fused + sagittal_fused + left_coronal_fused + 
+    # right_coronal_fused + right_coronal_fused * left_coronal_fused + 
+    # image_type + pt_sex + age_std + vol_dev_head_prev + ti(age_diff, 
+    # vol_dev_prev
+
+cranio_ar_comb <- cranio_ar %>%
+  filter(!is.na(reg_1_vol_dev_prev)) %>% 
+  pivot_longer(cols = starts_with("reg_"),
+               names_pattern = "(reg_[0-9]+)_(.*)",
+               names_to = c("region_num", "name")) %>% 
+  pivot_wider(names_from = name, values_from = value) %>% 
+  mutate(image_type = as.numeric(image_type == "CT"),
+         pt_sex = as.numeric(pt_sex == "Male")) %>% 
+  pivot_wider(names_from = region_num,
+              values_from = c(matches("fused"), image_type, pt_sex, age_std, vol_dev_head_prev), names_glue = "{region_num}_{.value}", values_fill = 0) %>% 
+  select(matches("reg_"), vol_dev_prev, vol_dev, age_diff)
+
+```
+
+```{r combo model}
+
+reg_form_combo <- formula(
+    paste0("vol_dev ~ ti(age_diff, vol_dev_prev) + ",
+           paste(names(cranio_ar_comb %>% 
+                         select(matches("reg_"))),
+                 collapse = " + ")))
+
+reg_ar_combo <- mgcv::gam(reg_form_combo, 
+                    data = cranio_ar_comb)
+```
+
