@@ -1,0 +1,81 @@
+---
+title: "Malformation Analysis"
+author: "Ryan Taylor"
+format: 
+  html:
+    theme: paper
+    highlight: haddock
+    code-fold: true
+    toc: true
+    toc-location: left
+    code-overflow: wrap
+    df-print: kable
+    knitr:
+      opts_chunk:
+        echo: true,
+        include: true
+        message: false,
+        warning: false
+        results: markup
+        fig.align: center
+        fig.height: 5
+        fig.width: 7
+        R.options:
+          scipen: 999
+          knitr.kable.NA: ""
+editor: source
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+# Clear memory
+rm(list = ls()); gc()
+
+# Load packages
+# if(!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  
+  # Extras
+  pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund, tidyfun, 
+  latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, MASS,
+  table1, gtsummary, ggridges, forestplot, mgcv,
+  broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary, itsadug,
+  SimpleITK,
+  
+  # Staples
+  DescTools, tidyverse, magrittr, janitor, glue,
+  SASmarkdown, knitr, kableExtra, ggpubr, ggpmisc, stargazer
+)
+
+# Locate SAS for SAS chunks
+saspath <- r"(C:\Program Files\SASHome\x86\SASFoundation\9.4\sas.exe)"
+sasopts <- "-nosplash -ls 75"
+
+# Make it easier to turn answers into rounded text
+PrintNum <- function(x, acc = 0.01, percent = F, vec = F){
+  if(percent){ 
+    y <- scales::label_percent(accuracy = acc)(x)
+  } else {
+    y <- scales::label_number(accuracy = acc)(x)
+  }
+  if(vec)( y <- paste0("(",
+                       paste(y, collapse = ", "),
+                       ")"))
+  return(y)
+}
+
+IMAGES_FOLDER <- here::here("analysis/Presentation Images")
+
+```
+
+# Load data
+
+```{r}
+#| label: read mha
+
+reader <- SimpleITK::ImageFileReader()
+
+mha1 <- SimpleITK::MetaImageIO(here::here("../data/Malformations_X1118-131023151241.mha"))
+```
