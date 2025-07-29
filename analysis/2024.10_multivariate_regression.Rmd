@@ -296,7 +296,8 @@ cranio_reg <- cranio_sub %>%
   slice_tail(n=1) %>% 
   ungroup() %>% 
   # Code suture type as factor based on frequency
-  mutate(suture_type = factor(suture_type, levels = setdiff(sut_type$suture_type, "Total")))
+  mutate(suture_type = factor(suture_type, 
+                              levels = setdiff(sut_type$suture_type, "Total")))
 
 ```
 
@@ -523,6 +524,7 @@ demo_form <- formula(paste("cbind(",
 # Run regression
 vol_reg <- lm(reg_form, data = cranio_reg)
 
+# Run reduced model (without sutures)
 demo_reg <- lm(demo_form, data = cranio_reg)
 ```
 
@@ -607,9 +609,45 @@ coeff_tbl %<>% left_join(lm_stats) %>%
          clean_var = str_remove_all(term, "suture_type"),
          term_name = paste0(region_num, ": ", clean_var))
 
+# Compare full and residual models
+exp_model_comp <- anova(vol_reg, demo_reg, test = "Pillai")
+
+exp_model_comp_sens <- map(c("Pillai", "Wilks", "Hotelling-Lawley", "Roy"),
+                           ~anova(vol_reg, demo_reg, test = .x))
+
+# Run separate models for R-squared comparisons
+exp_anova_df <- tibble(region_num = 1:12) %>% 
+  mutate(reg_form = map_chr(1:12,
+                            ~paste(paste0("reg_", .x, "_vol_dev"),
+                                   "~", 
+                                   paste(cranio_fusion_vars, collapse = " + "), 
+                                   " + right_coronal_fused * left_coronal_fused",
+                                   " + vol_dev_head_std + image_type + pt_sex + age_std")),
+         
+         demo_form = map_chr(1:12,
+                             ~paste(paste0("reg_", .x, "_vol_dev"),
+                                    "~", 
+                                    # paste(cranio_fusion_vars, collapse = " + "), 
+                                    # " + right_coronal_fused * left_coronal_fused",
+                                    "vol_dev_head_std + image_type + pt_sex + age_std"))) %>% 
+  mutate(
+    vol_reg = map(reg_form, ~lm(formula(.), data = cranio_reg)),
+    demo_reg = map(demo_form, ~lm(formula(.), data = cranio_reg))
+  ) %>% 
+  mutate(anova_test = map2(vol_reg, demo_reg, ~anova(.x, .y))) %>% 
+  mutate(f_stat = map_dbl(anova_test, ~.[["F"]][2]),
+         p_value = map_dbl(anova_test, ~.[["Pr(>F)"]][2]))
+
+# Merge F stats
+lm_stats %<>% 
+  left_join(
+    exp_anova_df %>% select(region_num, f_stat, p_value)
+            ) %>% 
+  mutate(p_value = format.pval(p_value, digits = 2, eps = 0.0001))
+
 # Display using kable, coloring background of each column to show best predictions
 lm_stats_k <- lm_stats %>% 
-  select(region_num, matches("adj_r_2"))
+  select(region_num, matches("adj_r_2|f_stat|p_value"))
 
 r_2_range <- lm_stats %>% 
   select(matches("adj_r_2")) %>% 
@@ -617,25 +655,39 @@ r_2_range <- lm_stats %>%
   unique(value)
 
 lm_stats_k$adj_r_2 <- cell_spec(round(lm_stats$adj_r_2, 3), color = "black", bold = T, 
-                              background = spec_color(lm_stats$adj_r_2, option = "turbo", 
-                                                  scale_from = c(min(r_2_range), max(r_2_range)),
-                                                  begin = 0.2, end = 0.8))
+                                background = spec_color(lm_stats$adj_r_2, 
+                                                        option = "turbo",
+                                                        scale_from = c(min(r_2_range), max(r_2_range)),
+                                                        begin = 0.5, end = 0.8, 
+                                                        direction = -1))
 
 lm_stats_k$adj_r_2_demo <- cell_spec(round(lm_stats$adj_r_2_demo, 3), color = "black", bold = T, 
-                              background = spec_color(lm_stats$adj_r_2_demo, option = "turbo", 
-                                                  scale_from = c(min(r_2_range), max(r_2_range)),
-                                                  begin = 0.2, end = 0.8))
+                                     background = spec_color(lm_stats$adj_r_2_demo, 
+                                                             option = "turbo",
+                                                             scale_from = c(min(r_2_range), max(r_2_range)),
+                                                             begin = 0.5, end = 0.8, 
+                                                        direction = -1))
 
+lm_stats_k$f_stat <- cell_spec(round(lm_stats$f_stat, 1), color = "black", 
+                                     background = spec_color(lm_stats$f_stat, 
+                                                             option = "turbo",
+                                                             begin = 0.5, end = 0.8, 
+                                                        direction = -1))
+
+# Create table
 lm_kable <- kbl(lm_stats_k, caption = "Model Performance Statistics", digits = 3,
-                col.names = c("Region","Adj. R Squared", "Adj. R Sq. w/o Sutures"), escape = F) %>% 
+                col.names = c("Region","Adj. R Squared", "Adj. R Sq. w/o Sutures", 
+                              "F Statistic", "P Value"), escape = F) %>% 
   kable_styling(full_width = F)
 
+# Save output as image
 save_kable(lm_kable, 
            paste0(IMAGES_FOLDER, "/explanatory_rsq.html"))
 
 webshot2::webshot(url = paste0(IMAGES_FOLDER, "/explanatory_rsq.html"),
                   file = paste0(IMAGES_FOLDER, "/explanatory_rsq.png"))
 
+# Print table
 lm_kable
 ```
 
@@ -1620,7 +1672,8 @@ cv_out_long <- cv_out %>%
   rename(vol_dev_pred = vol_dev) %>% 
   pivot_longer(matches("_pred"), 
                names_pattern = "(.*)_(pred.*)",
-               names_to = c("model", ".value"))
+               names_to = c("model", ".value")) %>% 
+  mutate(pred_abserr = sqrt(pred_sqerr))
 
 # Create pretty names for models
 cv_out_long %<>%
@@ -1635,19 +1688,20 @@ cv_out_long %<>%
                                  "combo" ~ "Prev. Visit * Time Combo")) %>% 
   mutate(model_neat = fct_inorder(model_neat))
 
-# Summarize square errors by model by suture
-sqerr_summ <- cv_out_long %>% 
+# Summarize absolute errors by model by suture
+err_summ <- cv_out_long %>% 
   filter(!model %in% c("vol_dev", "simple_all")) %>% 
   # Average across regions to get one square error per patient
   group_by(dropped_subject, dropped_subject_id, 
            suture_type, sut_obs, sut_pct, model_neat) %>%
-  summarize(sqerr = mean(pred_sqerr)) %>% 
+  summarize(sqerr = mean(pred_sqerr),
+            abserr = mean(pred_abserr)) %>% 
   ungroup() %>% 
   # Summarize distributions of square errors by suture by model
   group_by(suture_type, sut_obs, sut_pct,
            model_neat) %>% 
-  summarize(mean = mean(sqerr),
-            quant = list(quantile(sqerr, 
+  summarize(mean = mean(abserr),
+            quant = list(quantile(abserr, 
                                   c(0.05, 0.25, 0.5, 0.75, 0.95),
                                   names = T))) %>% 
   ungroup() %>% 
@@ -1656,8 +1710,8 @@ sqerr_summ <- cv_out_long %>%
   arrange(desc(sut_obs), quant_50.)
   
 # Display results
-kbl(sqerr_summ, 
-    caption = "Cross-Validated Square Error Summary",
+kbl(err_summ, 
+    caption = "Cross-Validated Absolute Error Summary",
     digits = 3,
     col.names = c("Suture", "Suture Count", "Suture Pct",
                   "Model",
@@ -1665,7 +1719,7 @@ kbl(sqerr_summ,
   kable_styling()
 
 # Summarize by model
-sqerr_summ_model <- sqerr_summ %>% 
+err_summ_model <- err_summ %>% 
   group_by(model_neat) %>% 
   summarize(model_med = weighted.mean(quant_50., sut_obs)) %>% 
   ungroup() %>% 
@@ -1675,7 +1729,7 @@ sqerr_summ_model <- sqerr_summ %>%
 cv_out_long %>% 
   filter(model != "vol_dev") %>% 
   ggplot() +
-  geom_jitter(aes(x = model, y = pred_sqerr, 
+  geom_jitter(aes(x = model, y = pred_abserr, 
                   color = suture_type), 
               alpha = 0.25, width = 0.3) +
   facet_wrap(~region_num) +
@@ -1686,30 +1740,33 @@ cv_out_long %>%
 cv_out_long %>% 
   filter(model != "vol_dev") %>% 
   ggplot(aes(x = interaction(model, suture_type), 
-             y = pred_sqerr, 
+             y = pred_abserr, 
              fill = model)) +
   geom_boxplot() +
   geom_vline(xintercept = c(5.5, 10.5, 15.5)) +
-  scale_y_continuous(transform = "log", labels = ~round(., 3)) +
+  scale_y_continuous(transform = "log", breaks = c(10^c(-3:3))) +
   facet_wrap(~region_num)  +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+max_abserr <- max(cv_out_long$pred_abserr, na.rm = T)
 
 # No regions: keep suture together
 suture_box <- cv_out_long %>% 
   filter(!model %in% c("vol_dev", "simple_all")) %>% 
   ggplot(aes(x = model_neat, 
-             y = pred_sqerr, 
+             y = pred_abserr, 
              fill = model_neat)) +
   geom_boxplot() +
   facet_wrap(~suture_type, nrow = 1) +
-  scale_y_continuous(transform = "log", labels = ~round(., 3)) +
+  scale_y_continuous(transform = "log", breaks = c(10^c(-3:3))) +
   theme(axis.text.x = element_blank(),
         legend.position = "bottom") +
   labs(x = NULL,
        y = "Out of Sample Prediction Error",
        fill = "Model")
 
-ggsave(file = paste0(IMAGES_FOLDER, "/suture_sq_error.png"),
+ggsave(file = paste0(IMAGES_FOLDER, "/suture_abs_error.png"),
        suture_box,
        width = 7, height = 5, units = "in")
 
@@ -1719,18 +1776,18 @@ suture_box
 model_box <- cv_out_long %>% 
   filter(model != "vol_dev") %>% 
   ggplot(aes(x = suture_type, 
-             y = pred_sqerr, 
+             y = pred_abserr, 
              fill = suture_type)) +
   geom_boxplot() +
   facet_wrap(~model_neat, nrow = 1, labeller = label_wrap_gen(10)) +
-  scale_y_continuous(transform = "log", labels = ~round(., 3)) +
+  scale_y_continuous(transform = "log", breaks = c(10^c(-3:3))) +
   theme(axis.text.x = element_blank(),
         legend.position = "bottom") +
   labs(x = NULL,
        y = "Out of Sample Prediction Error",
        fill = "Suture")
 
-ggsave(file = paste0(IMAGES_FOLDER, "/model_sq_error.png"),
+ggsave(file = paste0(IMAGES_FOLDER, "/model_abs_error.png"),
        model_box,
        width = 7, height = 5, units = "in")
 
