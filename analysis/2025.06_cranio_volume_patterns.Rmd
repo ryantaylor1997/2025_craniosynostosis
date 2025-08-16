@@ -44,7 +44,7 @@ pacman::p_load(
   
   # Extras
   latex2exp,
-  table1, mgcv, itsadug, readxl, sf, ggpmisc, lemon,
+  table1, mgcv, itsadug, readxl, sf, ggpmisc, lemon, cowplot,
   
   # Staples
   DescTools, tidyverse, magrittr, janitor,
@@ -119,7 +119,7 @@ sut <- cranio %>% select(matches("fused")) %>%
 cranio %<>% 
   bind_cols(sut %>% select(sutures)) %>% 
   mutate(num_sutures = rowSums(select(., matches("fused"))),
-         suture_type = case_when(num_sutures = 2 & 
+         suture_type = case_when(num_sutures == 2 & 
                                    left_coronal_fused == 1 & 
                                    right_coronal_fused == 1 ~ "bicoronal",
                                  num_sutures > 1 ~ "multiple",
@@ -136,7 +136,8 @@ cranio %<>%
 cran_summ <- cranio %>% 
   summarize("Rows" = n(),
             "Unique Pictures" = n_distinct(image_identifier),
-            "Unique Patients" = n_distinct(uid)) %>% 
+            "Unique Patients" = n_distinct(uid),
+            "Craniosynostosis Patients" = n_distinct(uid[suture_type != "no_suture"])) %>% 
   pivot_longer(everything(), names_to = "  ", values_to = " ")
 
 # Print summary table
@@ -195,7 +196,7 @@ summ_image <- tabyl(cranio_sub, image_type) %>%
 kbl(summ_image, caption = "Images by Image Type") %>% kable_styling(full_width = F)
 
 # Sex
-summ_gender <- cranio_sub %>% 
+summ_gender <- cranio_reg %>% 
   group_by(pt_sex) %>% 
   summarize(n = n_distinct(uid)) %>% 
   ungroup() %>% 
@@ -208,8 +209,9 @@ summ_age <- cranio_sub %>%
   group_by(uid) %>% 
   slice(1) %>% 
   ungroup() %>% 
-  summarize(age_mean = mean(age),
-            age_sd = sd(age)) %>% 
+  summarize(age_min = min(age),
+            age_med = median(age),
+            age_max = max(age)) %>% 
   ungroup() %>% 
   mutate(across(everything(),
                 ~. / 30))
@@ -220,7 +222,8 @@ kbl(summ_age, caption = "Patients Age Distribution") %>% kable_styling(full_widt
 cran_reg_summ <- cranio_reg %>% 
   summarize("Rows" = n(),
             "Unique Pictures" = n_distinct(image_identifier),
-            "Unique Patients" = n_distinct(uid)) %>% 
+            "Unique Patients" = n_distinct(uid),
+            "Craniosynostosis Patients" = n_distinct(uid[suture_type != "no_suture"])) %>% 
   pivot_longer(everything(), names_to = "  ", values_to = " ")
 
 # Print summary table
@@ -603,7 +606,7 @@ ggsave(paste0(IMAGES_FOLDER, "/coeff_plot_fusion.png"),
 
 ggsave(paste0(IMAGES_FOLDER, "/coeff_plot_all.png"),
        coeff_plot_all,
-       width = 8, height = 6, units = "in")
+       width = 5, height = 4, units = "in")
 ```
 
 # Predictive Model
@@ -619,6 +622,7 @@ cranio_cv <- cranio_sub %>%
   arrange(uid, age) %>% 
   group_by(uid) %>% 
   mutate(pt_visits = n(),
+         visit = 1:n(),
          across(c(age, vol_dev_head, matches("reg_")),
                 .fns = list("prev" = ~lag(., 1),
                             "diff" = ~ . - lag(., 1)))) %>% 
@@ -635,9 +639,9 @@ cranio_cv_1per <- cranio_cv %>%
   slice_tail(n=1) %>% 
   ungroup()
 
-# Keep patients with multiple visits
+# Keep 2nd visit for each patient
 cranio_cv_mult <- cranio_cv %>% 
-  filter(!is.na(age_prev)) %>% 
+  filter(visit == 2) %>% 
   # Exclude only observation of their suture type
   group_by(suture_type) %>% 
   mutate(n_obs = n()) %>% 
@@ -652,7 +656,6 @@ cranio_cv_mult <- cranio_cv %>%
 
 # Create wider data with interactions between covariates and regions
 cranio_cv_comb <- cranio_cv_mult %>%
-  filter(!is.na(age_prev)) %>% 
   pivot_longer(cols = starts_with("reg_"),
                names_pattern = "(reg_[0-9]+)_(.*)",
                names_to = c("region", ".value")) %>% 
@@ -673,8 +676,14 @@ cranio_cv_comb <- cranio_cv_mult %>%
 ## Longitudinal Data Summaries
 
 ```{r ar summ}
+
+# Keep all images from patients with multiple visits
+
+cranio_cv_longit <- cranio_cv %>% 
+  filter(pt_visits > 1)
+
 # Summarize counts in multiple visit data
-ar_summ <- cranio_cv_mult %>% 
+ar_summ <- cranio_cv_longit %>% 
   summarize("Rows" = n(),
             "Unique Pictures" = n_distinct(image_identifier),
             "Unique Patients" = n_distinct(uid)) %>% 
@@ -682,6 +691,47 @@ ar_summ <- cranio_cv_mult %>%
 
 kable(ar_summ, caption = "Repeat Visits Data") %>% 
   kable_styling(full_width = F)
+
+# Sex
+summ_gender_mult <- cranio_cv_longit %>% 
+  group_by(pt_sex) %>% 
+  summarize(n = n_distinct(uid)) %>% 
+  ungroup() %>% 
+  adorn_totals("row")
+
+kbl(summ_gender_mult, caption = "Longitudinal Patients by Gender") %>% kable_styling(full_width = F)
+
+# Age
+summ_age_cv <- cranio_cv_longit %>% 
+  filter(visit == 1) %>% 
+  summarize(age_min = min(age),
+            age_med = median(age),
+            age_max = max(age)) %>% 
+  ungroup() %>% 
+  mutate(across(everything(),
+                ~. / 30))
+
+kbl(summ_age_cv, caption = "Longitudinal Patients Age Distibution") %>% kable_styling(full_width = F)
+
+# Pics per patient
+summ_pics_cv <- cranio_cv_longit %>% 
+  summarize(pics_min = min(pt_visits),
+            pics_med = median(pt_visits),
+            pics_max = max(pt_visits)) %>% 
+  ungroup()
+
+kbl(summ_pics_cv, caption = "Longitudinal Patients Pictures Distibution") %>% kable_styling(full_width = F)
+
+# Time between
+summ_betw_cv <- cranio_cv_mult %>% 
+  summarize(time_min = min(age_diff, na.rm = T),
+            time_med = median(age_diff, na.rm = T),
+            time_max = max(age_diff, na.rm = T)) %>% 
+  ungroup() %>% 
+  mutate(across(everything(),
+                ~. / 30))
+
+kbl(summ_betw_cv, caption = "Longitudinal Patients Interval Distibution") %>% kable_styling(full_width = F)
 ```
 
 ```{r ar sutures}
@@ -729,60 +779,9 @@ demo_table_ar_l <- t1kable(demo_table_ar,
   kable_styling(full_width = F, latex_options = "hold_position")
 
 demo_table_ar
-
-# Sex
-summ_gender_mult <- cranio_cv_mult %>% 
-  group_by(uid) %>% 
-  # Use last picture taken for each patient
-  slice_tail(n=1) %>% 
-  ungroup() %>% 
-  group_by(pt_sex) %>% 
-  summarize(n = n_distinct(uid)) %>% 
-  ungroup() %>% 
-  adorn_totals("row")
-
-kbl(summ_gender_mult, caption = "Longitudinal Patients by Gender") %>% kable_styling(full_width = F)
-
-# Age
-summ_age_cv <- cranio_cv_mult %>% 
-  arrange(age) %>% 
-  group_by(uid) %>% 
-  slice(1) %>% 
-  ungroup() %>% 
-  summarize(age_mean = mean(age),
-            age_sd = sd(age)) %>% 
-  ungroup() %>% 
-  mutate(across(everything(),
-                ~. / 30))
-
-kbl(summ_age_cv, caption = "Longitudinal Patients Age Distibution") %>% kable_styling(full_width = F)
-
-# Pics per patient
-summ_pics_cv <- cranio_cv_mult %>% 
-  group_by(uid) %>% 
-  summarize(pics = n()) %>% 
-  ungroup() %>% 
-  summarize(pics_mean = mean(pics),
-            pics_sd = sd(pics)) %>% 
-  ungroup()
-
-kbl(summ_pics_cv, caption = "Longitudinal Patients Pictures Distibution") %>% kable_styling(full_width = F)
-
-# Time between
-summ_betw_cv <- cranio_cv_mult %>% 
-  arrange(uid, age) %>% 
-  group_by(uid) %>% 
-  mutate(time_bw = age - lag(age, 1)) %>% 
-  ungroup() %>% 
-  summarize(time_mean = mean(time_bw, na.rm = T),
-            time_sd = sd(time_bw, na.rm = T)) %>% 
-  ungroup() %>% 
-  mutate(across(everything(),
-                ~. / 30))
-
-kbl(summ_betw_cv, caption = "Longitudinal Patients Interval Distibution") %>% kable_styling(full_width = F)
 ```
 
+## CV Predictions
 
 We run a loop estimating several models while excluding one patient who has multiple visits. Then, we predict using that model on the excluded patient to determine that model's overall accuracy. 
 
@@ -823,27 +822,22 @@ for(subj_i in 1:n_subj_mult){
   cranio_cv_drop_i <- cranio_cv_1per %>% 
     filter(uid != cur_subj)
   
-  # Drop subject from only repeat visits
+  # Drop subject from only repeat (2nd) visits
   cranio_cv_mult_drop_i <- cranio_cv_mult %>% 
-    filter(!is.na(age_prev))
+    filter(uid != cur_subj)
   
   # Drop subject for combined model data
   cranio_cv_comb_drop_i <- cranio_cv_comb %>% 
     filter(uid != cur_subj)
   
   # Keep separate data of dropped subject
-  cranio_cv_i <- cranio_cv %>% 
-    filter(uid == cur_subj) %>%
-    arrange(age) %>%
-    mutate(visit = row_number()) %>%
-    filter(visit == 2)
+  cranio_cv_mult_i <- cranio_cv_mult %>% 
+    filter(uid == cur_subj)
   
   # Keep separate combined data of dropped subject
   cranio_cv_comb_i <- cranio_cv_comb %>% 
-    filter(uid == cur_subj) %>%
-    # Keep 2nd visit (1st in dataset, since 1st is already excluded above)
-    filter(age == min(age))
-    
+    filter(uid == cur_subj)
+  
   ### Fit models:
   
   # 1) Data of last / only visits (model not relying on previous)
@@ -904,7 +898,7 @@ for(subj_i in 1:n_subj_mult){
                                  data = cranio_cv_comb_drop_i)
   
   # Get region predictions for excluded observation
-  region_models_pred <- cranio_cv_i %>%
+  region_models_pred <- cranio_cv_mult_i %>%
     pivot_longer(cols = starts_with("reg_"),
                  names_pattern = "(reg_[0-9]+)_(.*)",
                  names_to = c("region", ".value")) %>%
@@ -922,7 +916,8 @@ for(subj_i in 1:n_subj_mult){
                                 ~predict(.x, newdata = .y)),
            te_pred = map2_dbl(te_model, new_sample, 
                               ~predict(.x, newdata = .y))) %>%
-    hoist(new_sample, "vol_dev")
+    hoist(new_sample, "vol_dev") %>% 
+    hoist(new_sample, "vol_dev_prev")
   
   # Predict combined model on 1 observation's 12 outcomes
   cranio_cv_comb_i$combo_pred <- predict(comb_model_drop_i,
@@ -930,7 +925,7 @@ for(subj_i in 1:n_subj_mult){
   
   # Compile original values and predictions from every model
   pred_df_i <- region_models_pred %>% 
-    select(region, vol_dev, matches("_pred")) %>% 
+    select(region, vol_dev, vol_dev_prev, matches("_pred")) %>% 
     ungroup() %>% 
     # Merge predictions from combined model
     left_join(cranio_cv_comb_i %>% 
@@ -984,7 +979,8 @@ cv_out <- CV_results %>%
 
 # Pivot so that model name is in a column
 cv_out_long <- cv_out %>% 
-  rename(vol_dev_pred = vol_dev) %>% 
+  rename(vol_dev_pred = vol_dev,
+         vol_dev_prev_pred = vol_dev_prev) %>% 
   pivot_longer(matches("_pred"), 
                names_pattern = "(.*)_(pred.*)",
                names_to = c("model", ".value")) %>% 
@@ -992,20 +988,21 @@ cv_out_long <- cv_out %>%
 
 # Create pretty names for models
 cv_out_long %<>%
-  mutate(model = factor(model, levels = c("vol_dev", "simple_all", "simple_rpt", "prev", "te", "combo"))) %>% 
+  mutate(model = factor(model, levels = c("vol_dev", "vol_dev_prev", "simple_all", "simple_rpt", "prev", "te", "combo"))) %>% 
   arrange(model) %>% 
   mutate(model_neat = case_match(model, 
-                                 "vol_dev" ~ "Actual",
+                                 "vol_dev" ~ "Truth",
+                                 "vol_dev_prev" ~ "Prev. Visit",
                                  "simple_all" ~ "Control (All Data)",
-                                 "simple_rpt" ~ "Control",
-                                 "prev" ~ "+ Baseline",
-                                 "te" ~ "+ Baseline * Time",
-                                 "combo" ~ "Joint Baseline * Time")) %>% 
+                                 "simple_rpt" ~ "Model 1",
+                                 "prev" ~ "Model 2",
+                                 "te" ~ "Model 3",
+                                 "combo" ~ "Model 4")) %>% 
   mutate(model_neat = fct_inorder(model_neat))
 
 # Summarize absolute errors by model by suture
 err_summ <- cv_out_long %>% 
-  filter(!model %in% c("vol_dev", "simple_all")) %>% 
+  filter(!model %in% c("vol_dev", "vol_dev_prev", "simple_all")) %>% 
   # Average across regions to get one square error per patient
   group_by(dropped_subject, dropped_subject_id, 
            suture_type_cln, sut_obs, sut_pct, model_neat) %>%
@@ -1042,15 +1039,17 @@ err_summ_model <- err_summ %>%
 
 # No regions: keep suture together
 suture_box <- cv_out_long %>% 
-  filter(!model %in% c("vol_dev", "simple_all")) %>% 
+  filter(!model %in% c("vol_dev", "vol_dev_prev", "simple_all")) %>% 
   ggplot(aes(x = model_neat, 
              y = pred_abserr, 
              fill = model_neat)) +
   geom_boxplot() +
   facet_wrap(~suture_type_cln, nrow = 1) +
   scale_y_continuous(transform = "log", breaks = c(10^c(-3:3))) +
+  theme_bw() +
   theme(axis.text.x = element_blank(),
         legend.position = "bottom") +
+  scale_fill_viridis_d(option = "turbo", begin = 0.2, end = 0.8, direction = -1) +
   labs(x = NULL,
        y = "Out of Sample Prediction Error",
        fill = "Model")
@@ -1059,38 +1058,7 @@ suture_box
 
 ggsave(paste0(IMAGES_FOLDER, "/pred_box_oos.png"),
        suture_box,
-       width = 8, height = 4, units = "in")
-
-```
-
-```{r plot pred errors}
-
-cv_out_corr <- cv_out %>% 
-  group_by(region_num) %>% 
-  summarize(pred_corr = cor(te_pred, vol_dev)) %>% 
-  ungroup() %>% 
-  mutate(oos_r_sq = pred_corr^2)
-
-# Scatterplot by region
-cv_pred_plot <- cv_out %>% 
-  left_join(cv_out_corr) %>% 
-  ggplot() +
-  geom_point(aes(x = vol_dev, 
-                 y = te_pred, 
-                 color = suture_type_cln)) +
-  geom_abline(slope = 1, intercept = 0) +
-  geom_text(aes(label = paste0("Corr = ", round(pred_corr, digits = 3)), 
-                x = -Inf, y = Inf), hjust = 0, vjust = 1) +
-  facet_wrap(~region_num, scales = "free") +
-  labs(x = "Volume Deviation", y = "Out-of-Sample Prediction",
-       color = "Suture Type") +
-  theme(legend.position = "bottom")
-
-cv_pred_plot
-
-ggsave(paste0(IMAGES_FOLDER, "/pred_plot_oos_conf.png"),
-       cv_pred_plot,
-       width = 8, height = 6, units = "in")
+       width = 6, height = 4, units = "in")
 
 ```
 
@@ -1118,9 +1086,9 @@ pred_eg <- cv_out_long %>%
                                  is_max == 1 ~ "Worst",
                                  T ~ "Neither") %>% 
            factor(levels = c("Best", "Worst", "Neither"))) %>% 
-  # Identify which patient was the min / max
+  # Identify which patient was the min (edit: not the max)
   group_by(dropped_subject) %>% 
-  filter(sum(is_min) > 0 | sum(is_max) > 0) %>% 
+  filter(sum(is_min) > 0) %>% 
   ungroup() %>% 
   # Add brain shapes
   left_join(brain_shapes) %>% 
@@ -1136,43 +1104,49 @@ pred_range <- c(-1, 1) * max(abs(cv_out_long$pred))
 
 # Plot predictions for each model for each of these examples
 pred_plot <- ggplot() +
-  geom_sf(data = pred_eg, aes(fill = pred, color = example_cat)) +
+  geom_sf(data = pred_eg, aes(fill = pred)) +
   geom_sf_text(data = st_centroid(pred_eg), 
-               aes(label = region_num, color = example_cat),
+               aes(label = region_num),
                show.legend = F, size = 2) +
   facet_grid(suture_type_cln + dropped_subject ~ model_neat,
              switch = "y",
              labeller = label_wrap_gen(10)) +
-  scale_fill_viridis_c(option = "turbo", limits = pred_range) +
-  scale_color_manual(values = c("Best" = "darkgreen",
-                                "Worst" = "mediumvioletred",
-                                "Neither" = "black")) +
+  scale_fill_viridis_c(option = "turbo",
+                       begin = 0.1, end = 0.9,
+                       limits = pred_range,
+                       transform = scales::transform_asinh(),
+                       breaks = c(-50, -10, -1, 0, 1, 10, 50)) +
   labs(x = NULL, y = NULL, 
-       fill = "Deviation\nPrediction", color = "Phenotype\nError Type") +
+       fill = "Deviation\nPrediction") +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank(),
-        strip.text.y = element_text(angle = 90))
+        strip.text.y = element_text(angle = 90),
+        legend.position = "bottom")
 
-pred_plot
+pred_plot_ln <- ggdraw(pred_plot) + 
+  draw_line(x = c(0.435, 0.435), y = c(0.15, 0.99),
+            color = viridis::turbo(1))
 
+pred_plot_ln
+
+# Save this
 ggsave(file = paste0(IMAGES_FOLDER, "/prediction_grid.png"),
-       pred_plot,
-       height = 6, width = 5, units = "in")
+       pred_plot_ln,
+       height = 3, width = 5, units = "in")
 
-pred_eg_lone <- pred_eg %>% filter(dropped_subject == 32)
+### Also plot a single patient as a descriptive example
+pred_eg_lone <- pred_eg %>% 
+  filter(dropped_subject == pred_eg$dropped_subject[1])
 
 pred_plot_lone <- ggplot() +
-  geom_sf(data = pred_eg_lone, aes(fill = pred, color = example_cat)) +
+  geom_sf(data = pred_eg_lone, aes(fill = pred)) +
   geom_sf_text(data = st_centroid(pred_eg_lone), 
-               aes(label = region_num, color = example_cat)) +
+               aes(label = region_num)) +
   facet_grid(suture_type + dropped_subject ~ model_neat,
              switch = "y",
              labeller = label_wrap_gen(10)) +
   scale_fill_viridis_c(option = "turbo", limits = pred_range) +
-  scale_color_manual(values = c("Best" = "darkgreen",
-                                "Worst" = "mediumvioletred",
-                                "Neither" = "black")) +
   labs(x = NULL, y = NULL, 
        fill = "Prediction", color = "Suture Pred Cat") +
   theme(axis.text = element_blank(),
