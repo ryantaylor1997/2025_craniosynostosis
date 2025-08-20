@@ -9,9 +9,7 @@ output:
     toc: yes
     toc_float: yes
 header-includes:
-params: 
-  set_title: "6/2025"
-title: "`r paste('Multivariate Regression Analysis:', params$set_title)`"
+title: "Multivariate Regression Analysis"
 editor_options: 
   chunk_output_type: console
 ---
@@ -44,7 +42,7 @@ pacman::p_load(
   
   # Extras
   latex2exp,
-  table1, mgcv, itsadug, readxl, sf, ggpmisc, lemon, cowplot,
+  table1, mgcv, itsadug, readxl, sf, ggpmisc, lemon, cowplot, viridis,
   
   # Staples
   DescTools, tidyverse, magrittr, janitor,
@@ -74,13 +72,17 @@ shift_legend2 <- function(p) {
 
 # Overview
 
-This document records the methods and results of one multivariate regression analysis and a series of regressions using splines to describe brain volume patterns in craniosynostosis patients.
+This document records the methods and results of one multivariate regression analysis and a series of generalized additive models to describe regional brain volume patterns in craniosynostosis patients and normative control patients.
 
-# Load and clean data
+# Data
 
 First we load the data for the analysis. All of the data is stored in the "Volumetric Results-8-6-2024" Excel file.
 
-We create a clean column indicating the category of suture that we will use in our categorical predictor variable. If a patient has both left coronal and right coronal sutures, we classify them as "Bicoronal." If they have another combination of multiple sutures, we classify them as "multiple," and eventually exclude them. If they have no sutures, we classify them as "No suture." Otherwise, we classify them based on the single suture they have.
+We create a clean column indicating the category of suture, which we use to examine model performance across subsets of patients. 
+
+If a patient has both left coronal and right coronal sutures, we classify them as "Bicoronal." If they have another combination of multiple sutures, we classify them as "multiple," and eventually exclude them. If they have no sutures, we classify them as "No suture." Otherwise, we classify them based on the single suture they have.
+
+We also compute the total deviation between the volume of the patient's actual head and the volume of their personalized normative reference head. This total deviation is later used in our explanatory model to control for *overall* head shape abnormality, allowing more precise estimation of the effect of suture fusions on *regional* volumes.
 
 ```{r load data}
 
@@ -130,6 +132,8 @@ cranio %<>%
 
 ## Data counts
 
+First, we summarize the data at the highest level to understand the number of images, the number of unique patients contributing images, and the number of unique patients with a suture fusion.
+
 ```{r data summ}
 
 # Summarize counts of pictures and patients
@@ -147,11 +151,9 @@ summ_kable <- kable(cran_summ, caption = "All pictures and patients") %>%
 summ_kable
 ```
 
-# Data cleaning
+## Data cleaning
 
-Based on summaries, there are some rare categories of data that we should exclude to reduce the variability of the data.
-
-We use one image from each patient, which we choose as the last image taken for each patient. We also exclude multiple sutures and lambdoid sutures. Finally, one patient's sex is missing, so we exclude that patient.
+Next, we select the subset of data that will be used for our analyses. There are some rare suture fusion types that we should exclude to reduce the variability of the data. We exclude images with multiple sutures or lambdoid sutures. Additionally, a small number of patients' sex or age is missing; since these are important controls, we exclude these patients. Finally, we use one image from each patient, so we choose the last image taken for each patient. 
 
 ```{r reg data}
 
@@ -181,9 +183,11 @@ cranio_reg <- cranio_sub %>%
 
 ```
 
-# Clean Summary statistics
+## Clean Summary statistics
 
-## Clean data counts
+### Clean data counts
+
+We summarize the cleaned data to understand the representation across gender, image type, and age.
 
 ```{r data summ reg}
 
@@ -235,7 +239,7 @@ summ_reg_kable
 
 ## Table 1
 
-With the cleaned data, we start with a Table 1 displaying information about the infants in our sample.
+More generally, we create a Table 1 displaying demographics about the infants in our sample.
 
 ```{r table 1}
 
@@ -267,7 +271,26 @@ demo_table
 
 # Explanatory Regression
 
-Next, we run a multivariate regression to find the association between the 12 regions' volume differences in a given patient with that patient's suture type.
+For our first aim, we run a single multivariate regression to estimate the association between the 12 cranial regions' relative volumes and suture fusion types. The 12 regional volume deviations for patient $i$ are treated as a vector: 
+$$
+\textbf{Y}_i = [Y_{1,i}, \dots, Y_{12,i}]^\top.
+$$
+We regress these measurements on a linear combination of covariates:
+
+$$
+\begin{aligned}
+    Y_{r, i} = \ & \beta_{0, r} + \beta_{1, r} [\text{Metopic}] + \beta_{2, r} [\text{Sagittal}] + \\ 
+    & \beta_{3, r} [\text{L. Coronal}] + \beta_{4, r} [\text{R. Coronal}] + \\
+    & \beta_{5, r} [\text{LC}] * [\text{RC}] + \\
+    & \beta_{6, r} [\text{Age}] + \beta_{7, r} [\text{Sex}] + \beta_{8, r} [\text{Image Type}] + \\
+    & \beta_{9, r} [\text{Total Ref. Vol. Deviation}] + \epsilon_{r, i}.
+\end{aligned}
+$$
+Total Ref. Vol. Deviation denotes the overall intracranial volume deviation from a healthy reference. Image Type, Sex (1 for male, 0 for female), and Age (in days) are included as predictors, along with binary indicators for each phenotype. The Gaussian residuals are represented as $\boldsymbol{\epsilon}_i = (\epsilon_{1, i}, ..., \epsilon_{12, i})$, $\boldsymbol{\epsilon}_i \iid N_{12}(0, \boldsymbol{\Sigma})$, where the covariance matrix $\boldsymbol{\Sigma}$ captures the relationships between volume deviations in multiple regions for the same patient $Y_{r,i}, Y_{r', i}$.
+
+Patient age and total reference volume deviation are standardized for more interpretable results. The effects of bicoronal suture fusions are estimated as the combined effect of left coronal suture fusions, right coronal suture fusions, and an interaction between the two.
+
+We also estimate a version of this model that excludes all suture fusion indicator variables, and includes only total reference volume deviation, image type, age, and sex. This serves as a baseline against which we can compare the model above to assess significance of the suture fusion indicators in explaining regional volume deviations.
 
 ```{r reg}
 
@@ -279,13 +302,13 @@ cranio_fusion_vars <- cranio_reg %>%
 
 # Preserve means and sd's for consistent normalization
 cranio_scale <- cranio_reg %>% 
-  summarize(across(c(head_vol, vol_dev_head, age),
+  summarize(across(c(vol_dev_head, age),
                    .fns = list("mean" = ~mean(., na.rm = T),
                                "sd" = ~sd(., na.rm = T))))
 
 # Normalize variables
 cranio_reg %<>%
-  mutate(across(c(head_vol, vol_dev_head, age),
+  mutate(across(c(vol_dev_head, age),
                 ~ ( . - cranio_scale[[paste0(cur_column(), "_mean")]][1]) / 
                   cranio_scale[[paste0(cur_column(), "_sd")]][1],
                 .names = "{.col}_std"))
@@ -317,7 +340,7 @@ vol_reg <- lm(reg_form, data = cranio_reg)
 demo_reg <- lm(demo_form, data = cranio_reg)
 ```
 
-The results from this model are presented in the table below. We present an estimate of the effects of a bicoronal suture fusion, estimated as the sum of the coefficients of left coronal, right coronal, and their interaction.
+The results from this model are presented in the table below. We use the variance-covariance matrix calculated by R to compute the variance of the bicoronal suture fusion effect, which is a linear combination of three parameters.
 
 ```{r beta table}
 
@@ -379,6 +402,8 @@ coeff_tbl <- beta_tbl %>%
   arrange(region_num)
 ```
 
+We then summarize the performance of this model using adjusted $R^2$. Adjusted $R^2$ is calculated separately for each of the 12 outcome scalars $Y_1, ..., Y_{12}$. In addition, 12 region-specific models are run with the same formula, and F statistics are computed separately for each region to assess the significance of adding all suture fusion indicator variables to a model containing only control variables.
+
 ```{r expl performance}
 
 # Extract RSE and R Squared measures for all 12 regions
@@ -397,15 +422,7 @@ coeff_tbl %<>% left_join(lm_stats) %>%
   select(response, rse, r_2, adj_r_2, everything()) %>% 
   mutate(low_95 = estimate - 1.96*std.error,
          high_95 = estimate + 1.96*std.error,
-         region_num = str_extract(response, "[0-9]+") %>% as.numeric(),
-         clean_var = str_remove_all(term, "suture_type"),
-         term_name = paste0(region_num, ": ", clean_var))
-
-# Compare full and residual explanatory models
-exp_model_comp <- anova(vol_reg, demo_reg, test = "Pillai")
-
-exp_model_comp_sens <- map(c("Pillai", "Wilks", "Hotelling-Lawley", "Roy"),
-                           ~anova(vol_reg, demo_reg, test = .x))
+         region_num = str_extract(response, "[0-9]+") %>% as.numeric())
 
 # Run separate models for R-squared comparisons
 exp_anova_df <- tibble(region_num = 1:12) %>% 
@@ -435,7 +452,7 @@ lm_stats %<>%
             ) %>% 
   mutate(p_value = format.pval(p_value, digits = 2, eps = 0.0001))
 
-# Display using kable, coloring background of each column to show best predictions
+# Display using kable
 lm_stats_k <- lm_stats %>% 
   select(region_num, matches("adj_r_2|f_stat|p_value"))
 
@@ -445,45 +462,12 @@ lm_kable_l <- kbl(lm_stats_k, caption = "Model Performance Statistics", digits =
                               "F Statistic", "P Value"), escape = F, booktabs = T,
                 format = "latex", label = "explr2", linesep = "") %>% 
   kable_styling(full_width = F)
-
-r_2_range <- lm_stats %>% 
-  select(matches("adj_r_2")) %>% 
-  pivot_longer(everything()) %$% 
-  unique(value)
-
-lm_stats_k$adj_r_2 <- cell_spec(round(lm_stats$adj_r_2, 3), color = "black", bold = T, 
-                                background = spec_color(lm_stats$adj_r_2, 
-                                                        option = "turbo",
-                                                        scale_from = c(min(r_2_range), max(r_2_range)),
-                                                        begin = 0.5, end = 0.8, 
-                                                        direction = -1))
-
-lm_stats_k$adj_r_2_demo <- cell_spec(round(lm_stats$adj_r_2_demo, 3), color = "black", bold = T, 
-                                     background = spec_color(lm_stats$adj_r_2_demo, 
-                                                             option = "turbo",
-                                                             scale_from = c(min(r_2_range), max(r_2_range)),
-                                                             begin = 0.5, end = 0.8, 
-                                                        direction = -1))
-
-lm_stats_k$f_stat <- cell_spec(round(lm_stats$f_stat, 1), color = "black", 
-                                     background = spec_color(lm_stats$f_stat, 
-                                                             option = "turbo",
-                                                             begin = 0.5, end = 0.8, 
-                                                        direction = -1))
-
-# Create table
-lm_kable <- kbl(lm_stats_k, caption = "Model Performance Statistics", digits = 3,
-                col.names = c("Region","Adj. R Squared", "Adj. R Sq. w/o Sutures", 
-                              "F Statistic", "P Value"), escape = F) %>% 
-  kable_styling(full_width = F)
-
-# Print table
-lm_kable
 ```
 
 ## Coefficients on the brain
 
-We create a brain shape to plot the results on top of the region map:
+We create a brain shape with labels mapped out in order to plot the model results on top of the intercranial regions.
+
 ```{r brain shape}
 
 # Include diagram from Porras paper
@@ -526,7 +510,7 @@ brain_circle <- tibble(x = 2.5, y = 4.5) %>%
 brain_shapes <- st_intersection(brain_shapes, brain_circle)
 ```
 
-Next, we plot the coefficients on the map of the brain regions.
+Next, we visualize the estimated volume patterns corresponding to each suture fusion type on a map of the brain regions.
 
 ```{r coeffs}
 
@@ -554,32 +538,7 @@ reg_coeffs %<>%
 reg_coeffs %<>%
   mutate(is_suture = if_else(str_detect(term, "fused|bicoronal"), 1, 0))
 
-reg_coeffs_control <- reg_coeffs %>% 
-  filter(is_suture == 0)
-
-reg_coeffs_fusion <- reg_coeffs %>% 
-  filter(is_suture == 1)
-
 # Plot coefficients on brain shape
-coeff_plot_control <- ggplot() +
-  geom_sf(data = reg_coeffs_control, 
-          aes(fill = estimate)) +
-  geom_sf_text(data = st_centroid(reg_coeffs_control), aes(label = region_num)) +
-  facet_wrap(~var_clean, nrow = 1) +
-  scale_fill_viridis_c(option = "turbo", 
-                       limits = (c(-1, 1) * max(abs(reg_coeffs$estimate)))) +
-  labs(x = "", y = "", fill = "Estimate") +
-  theme_void()
-
-coeff_plot_fusion <- ggplot() +
-  geom_sf(data = reg_coeffs_fusion, aes(fill = estimate)) +
-  geom_sf_text(data = st_centroid(reg_coeffs_fusion), aes(label = region_num)) +
-  facet_wrap(~var_clean, nrow = 1) +
-  scale_fill_viridis_c(option = "turbo", 
-                       limits = (c(-1, 1) * max(abs(reg_coeffs$estimate)))) +
-  labs(x = "", y = "", fill = "Estimate") +
-  theme_void()
-
 coeff_plot_all0 <- ggplot() +
   geom_sf(data = reg_coeffs, aes(fill = estimate)) +
   geom_sf_text(data = st_centroid(reg_coeffs), aes(label = region_num)) +
@@ -592,28 +551,22 @@ coeff_plot_all0 <- ggplot() +
 
 coeff_plot_all <- shift_legend2(coeff_plot_all0)
 
-coeff_plot_control
-coeff_plot_fusion
-coeff_plot_all
-
-ggsave(paste0(IMAGES_FOLDER, "/coeff_plot_control.png"),
-       coeff_plot_control,
-       width = 8, height = 4, units = "in")
-
-ggsave(paste0(IMAGES_FOLDER, "/coeff_plot_fusion.png"),
-       coeff_plot_fusion,
-       width = 8, height = 4, units = "in")
-
 ggsave(paste0(IMAGES_FOLDER, "/coeff_plot_all.png"),
        coeff_plot_all,
        width = 5, height = 4, units = "in")
 ```
 
-# Predictive Model
+# Longitudinal Predictive Models
 
-## Cross-Validated Predictions
+For our second aim, we design longitudinal predictive models to estimate the volumetric deviations a patient will develop in the future. We use leave-one-patient-out cross-validation to evaluate the performance of these models.
 
-We create a fresh version of the "AR" data, including information from previous visits, in order to keep this data not reliant on the above sections.
+## Longitudinal Data
+
+First, we create a new version of the data, including information from previous visits. All images taken of patients above 1 year old are excluded, as well as images without sex or age provided. Further, patients with only one image are omitted from this analysis. From each of the remaining patients, the second image taken is retained. Finally, since performance is evaluated using cross-validation, we exclude the single patient with a left coronal suture fusion remaining in the data.
+
+The following longitudinal measures are calculated: time between the first and second image, total reference volume deviation in the first image, and regional volume deviation in the first image for each of the 12 regions.
+
+One of the longitudinal predictive models estimates the effect of previous regional volume deviations on predicted future outcomes using all regions together. For this model, we create a wider data set with a region indicator column and different columns for each region-covariate interaction.
 
 ```{r cv data}
 # Create new data with previous values for cross-validated model
@@ -627,17 +580,10 @@ cranio_cv <- cranio_sub %>%
                 .fns = list("prev" = ~lag(., 1),
                             "diff" = ~ . - lag(., 1)))) %>% 
   ungroup() %>%
-  mutate(across(c(head_vol, vol_dev_head, age),
+  mutate(across(c(vol_dev_head, age),
                 ~ ( . - cranio_scale[[paste0(cur_column(), "_mean")]][1]) / 
                   cranio_scale[[paste0(cur_column(), "_sd")]][1],
                 .names = "{.col}_std"))
-
-# Limit data to one observation per patient (all patients)
-cranio_cv_1per <- cranio_cv %>% 
-  group_by(uid) %>% 
-  # Use last picture taken for each patient
-  slice_tail(n=1) %>% 
-  ungroup()
 
 # Keep 2nd visit for each patient
 cranio_cv_mult <- cranio_cv %>% 
@@ -674,6 +620,8 @@ cranio_cv_comb <- cranio_cv_mult %>%
 ```
 
 ## Longitudinal Data Summaries
+
+We summarize this subset to compare the characteristics of infants with longitudinal data in the first year to the less restrictive previous sample.
 
 ```{r ar summ}
 
@@ -783,7 +731,57 @@ demo_table_ar
 
 ## CV Predictions
 
-We run a loop estimating several models while excluding one patient who has multiple visits. Then, we predict using that model on the excluded patient to determine that model's overall accuracy. 
+Next, we estimate four longitudinal predictive models:
+
+```{=latex}
+\begin{enumerate}
+
+    \item Region-Specific ``Control" Model: linear regressions using suture characteristics and demographics but no previous visit data:
+    
+\begin{equation}
+\begin{aligned}
+    Y_{r, i, t} = \ & \beta_{0, r} + \beta_{1, r} [\text{Metopic}] + \beta_{2, r} [\text{Sagittal}] + \\ 
+    & \beta_{3, r} [\text{L. Coronal}] + \beta_{4, r} [\text{R. Coronal}] + \\
+    & \beta_{5, r} [\text{LC}] * [\text{RC}] +
+    \beta_{6, r} [\text{Age}] + \beta_{7, r} [\text{Sex}] + \\
+    & \beta_{8, r} [\text{Image Type}] + \epsilon_{r, i, t}.
+\end{aligned}
+\end{equation}
+
+\item Control + Baseline Volume Deviation Model: linear regressions adding previous visit volume deviation:
+
+\begin{equation}
+\begin{aligned}
+    Y_{r, i, t} = \ & \beta_{0, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
+    & \beta_{9, r} [(\text{Total Ref. Vol. Deviation})_{t-1}] + \\
+    & \beta_{10, r} [Y_{r, i, t-1}] + \epsilon_{r, i, t}.
+\end{aligned}
+\end{equation}
+
+\item Control + Baseline Volume Deviation + Time Since Baseline Model: general additive models adding tensor interaction spline function \cite{WoodGAM} of previous visit volume deviation and time since previous visit $f_r(\cdot)$:
+
+\begin{equation}
+\begin{aligned}
+    Y_{r, i, t} = \ & \beta_{0, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
+    & \beta_{9, r} [(\text{Total Ref. Vol. Deviation})_{t-1}] + \\
+    & f_r([Y_{r,i,t-1}], [Time_t - Time_{t-1}]) + \epsilon_{r, i, t}.
+\end{aligned}
+\end{equation}
+
+\item Joint model: general additive model pooling information across all regions. Whereas the previous model estimates region-specific tensor splines $f_1(\cdot), \ldots, f_{12}(\cdot)$, the joint model estimates a common tensor interaction spline function across all regions $g(\cdot)$: 
+
+\begin{equation}
+\begin{aligned}
+    Y_{r, i, t} = \ & \beta_{0, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
+    & \beta_{9, r} [(\text{Total Ref. Vol. Deviation})_{t-1}] + \\
+    & g([Y_{r,i,t-1}], [Time_t - Time_{t-1}]) + \epsilon_{r, i, t}.
+\end{aligned}
+\end{equation}
+
+\end{enumerate}
+```
+
+The first three models are estimated separately on each of the 12 regions. The fourth model estimates a predictive spline using all regions together, but other covariates are estimated independently for the 12 regions. We run a loop over all of the patients included in this sample: each of the four models is estimated while excluding one patient, and then each model is used to predict the excluded patient's regional volume deviations in their second visit.
 
 ```{r leave one out}
 
@@ -818,10 +816,6 @@ for(subj_i in 1:n_subj_mult){
   # Pull current subject to be left out
   cur_subj <- subj_ids_mult[subj_i]
   
-  # Drop subject from all data
-  cranio_cv_drop_i <- cranio_cv_1per %>% 
-    filter(uid != cur_subj)
-  
   # Drop subject from only repeat (2nd) visits
   cranio_cv_mult_drop_i <- cranio_cv_mult %>% 
     filter(uid != cur_subj)
@@ -840,24 +834,7 @@ for(subj_i in 1:n_subj_mult){
   
   ### Fit models:
   
-  # 1) Data of last / only visits (model not relying on previous)
-  all_pts_models_drop_i <- cranio_cv_drop_i %>%
-    pivot_longer(cols = starts_with("reg_"),
-                 names_pattern = "(reg_[0-9]+)_(.*)",
-                 names_to = c("region", ".value")) %>%
-    group_by(region) %>%
-    nest() %>%
-    # Linear model
-    mutate(
-      simple_all_model = map(data, 
-                         ~lm(vol_dev ~ 0 +
-                               metopic_fused + sagittal_fused + 
-                               left_coronal_fused + right_coronal_fused + 
-                               right_coronal_fused * left_coronal_fused + 
-                               image_type + pt_sex + age_std,
-                             data = .x)))
-  
-  # 2) Data excluding first / only visits (models relying on previous visits)
+  # 1) Data excluding first / only visits (models relying on previous visits)
   rpt_pts_models_drop_i <- cranio_cv_mult_drop_i %>% 
     pivot_longer(cols = starts_with("reg_"),
                  names_pattern = "(reg_[0-9]+)_(.*)",
@@ -893,7 +870,7 @@ for(subj_i in 1:n_subj_mult){
                                 data = .x))
     )
   
-  # 3) "Combined" data: excluding first / only visits, with region interactions
+  # 2) "Combined" data: excluding first / only visits, with region interactions
   comb_model_drop_i <- mgcv::gam(reg_form_combo, 
                                  data = cranio_cv_comb_drop_i)
   
@@ -905,12 +882,8 @@ for(subj_i in 1:n_subj_mult){
     group_by(region) %>%
     nest(.key = "new_sample") %>%
     # Merge models estimated without observation
-    left_join(all_pts_models_drop_i, join_by(region)) %>% 
-    rename(all_pts_data = data) %>% 
     left_join(rpt_pts_models_drop_i, join_by(region)) %>% 
-    mutate(simple_all_pred = map2_dbl(simple_all_model, new_sample, 
-                                      ~predict(.x, newdata = .y)),
-           simple_rpt_pred = map2_dbl(simple_rpt_model, new_sample, 
+    mutate(simple_rpt_pred = map2_dbl(simple_rpt_model, new_sample, 
                                       ~predict(.x, newdata = .y)),
            prev_pred = map2_dbl(prev_model, new_sample, 
                                 ~predict(.x, newdata = .y)),
@@ -951,25 +924,14 @@ for(subj_i in 1:n_subj_mult){
 
 ## CV Prediction Summaries
 
-We summarize the distributions of square errors from these predictions. We want to look at how the various models may perform better or worse across suture types and individual regions.
+We compare the distributions of these cross-validated absolute errors using boxplots. For each patient, we take the average absolute errors across all regions, so that we have one absolute error measure for each patient.
 
 ```{r summarize mse}
 
-# Save info about patients to look for patterns
-patient_info <- cranio_cv_1per %>% 
-  select(uid, pt_sex, pt_race, pt_ethnicity, suture_type)
-
-# Count number of observations of each suture type
-sut_counts_cv <- cranio_cv_mult %>% 
-  group_by(suture_type) %>% 
-  summarize(sut_obs = n()) %>% 
-  ungroup() %>% 
-  mutate(sut_pct = sut_obs / sum(sut_obs))
-
 # Merge this info to predictions
 cv_out <- CV_results %>% 
-  left_join(patient_info, by = c("dropped_subject_id" = "uid")) %>% 
-  left_join(sut_counts_cv, by = "suture_type") %>% 
+  left_join(cranio_cv_mult %>% select(uid, suture_type, suture_type_cln),
+            by = c("dropped_subject_id" = "uid")) %>% 
   mutate(region_num = as.numeric(str_extract(region, "[0-9]+"))) %>% 
   # Code suture type as factor based on frequency
   mutate(suture_type_cln = str_replace_all(suture_type, "_", " ") %>% 
@@ -988,56 +950,18 @@ cv_out_long <- cv_out %>%
 
 # Create pretty names for models
 cv_out_long %<>%
-  mutate(model = factor(model, levels = c("vol_dev", "vol_dev_prev", "simple_all", "simple_rpt", "prev", "te", "combo"))) %>% 
+  mutate(model = factor(model, levels = c("vol_dev", "vol_dev_prev", "simple_rpt", "prev", "te", "combo"))) %>% 
   arrange(model) %>% 
   mutate(model_neat = case_match(model, 
                                  "vol_dev" ~ "Truth",
                                  "vol_dev_prev" ~ "Prev. Visit",
-                                 "simple_all" ~ "Control (All Data)",
                                  "simple_rpt" ~ "Model 1",
                                  "prev" ~ "Model 2",
                                  "te" ~ "Model 3",
                                  "combo" ~ "Model 4")) %>% 
   mutate(model_neat = fct_inorder(model_neat))
 
-# Summarize absolute errors by model by suture
-err_summ <- cv_out_long %>% 
-  filter(!model %in% c("vol_dev", "vol_dev_prev", "simple_all")) %>% 
-  # Average across regions to get one square error per patient
-  group_by(dropped_subject, dropped_subject_id, 
-           suture_type_cln, sut_obs, sut_pct, model_neat) %>%
-  summarize(sqerr = mean(pred_sqerr),
-            abserr = mean(pred_abserr)) %>% 
-  ungroup() %>% 
-  # Summarize distributions of square errors by suture by model
-  group_by(suture_type_cln, sut_obs, sut_pct,
-           model_neat) %>% 
-  summarize(mean = mean(abserr),
-            quant = list(quantile(abserr, 
-                                  c(0.05, 0.25, 0.5, 0.75, 0.95),
-                                  names = T))) %>% 
-  ungroup() %>% 
-  unnest_wider(quant, names_sep = "_", names_repair = "universal") %>% 
-  # Sort by frequency and by best median square error
-  arrange(desc(sut_obs), quant_50.)
-  
-# Display results
-kbl(err_summ, 
-    caption = "Cross-Validated Absolute Error Summary",
-    digits = 3,
-    col.names = c("Suture", "Suture Count", "Suture Pct",
-                  "Model",
-                  "Mean Sq. Error", "5th Pctile", "25th Pctile", "Median", "75th Pctile", "95th Pctile")) %>% 
-  kable_styling()
-
-# Summarize by model
-err_summ_model <- err_summ %>% 
-  group_by(model_neat) %>% 
-  summarize(model_med = weighted.mean(quant_50., sut_obs)) %>% 
-  ungroup() %>% 
-  arrange(model_med)
-
-# No regions: keep suture together
+# Visualize (no regions, keep suture together)
 suture_box <- cv_out_long %>% 
   filter(!model %in% c("vol_dev", "vol_dev_prev", "simple_all")) %>% 
   ggplot(aes(x = model_neat, 
@@ -1062,13 +986,12 @@ ggsave(paste0(IMAGES_FOLDER, "/pred_box_oos.png"),
 
 ```
 
-We also plot a sample of predictions on top of the brain shapes. For each patient, we again take an average of the square errors across all regions for each model. Then, we identify the patients who represent the best or worst overall predictions for each model. For each of those patients, we plot the actual volume deviations and the predictions from every model. Green text and lines indicates the best prediction for a given suture type; pink represents the worst prediction for a given suture type.
+We also plot a sample of predictions on top of the brain shapes. To select a subset of patients who might serve as informative examples, we identify the patients with the best or worst average predictions by model and by suture fusion type. For each of these example patients, we plot the actual volume deviations, actual previous volume deviations, and predictions from every model.
 
 ```{r plot predictions, fig.dim=c(10,10)}
 
 # Identify best and worst predictions for each suture
 pred_eg <- cv_out_long %>% 
-  filter(!model %in% c("simple_all")) %>% 
   group_by(dropped_subject, model) %>% 
   # Average prediction err across regions for each subject and model
   mutate(subj_model_avg_err = mean(pred_sqerr, na.rm = T)) %>% 
