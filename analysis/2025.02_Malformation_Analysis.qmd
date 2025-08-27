@@ -36,24 +36,25 @@ rm(list = ls()); gc()
 # Load packages
 # if(!require("pacman")) install.packages("pacman")
 pacman::p_load(
+  # Specialty
+  itsadug, SimpleITK,
   
-  # Extras
-  pwr, gtools, coda, numDeriv, mvtnorm, extraDistr, rstan, refund, tidyfun, 
-  latex2exp, pROC, glmnet, corrplot, ncvreg, readxl, sf, MASS,
-  table1, gtsummary, ggridges, forestplot, mgcv,
-  broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary, itsadug,
-  SimpleITK,
+  # Format
+  latex2exp, table1, gtsummary,
+  broom.helpers, broom.mixed,
   
-  # Staples
-  DescTools, tidyverse, magrittr, janitor, glue,
-  SASmarkdown, knitr, kableExtra, ggpubr, ggpmisc, stargazer
+  # Modeling
+  mgcv,
+  
+  # Useful extensions
+  gtools, readxl,
+  
+  # Basics
+  DescTools, tidyverse, magrittr, janitor, glue, skimr,
+  knitr, kableExtra, ggpubr, ggpmisc
 )
 
-# Locate SAS for SAS chunks
-saspath <- r"(C:\Program Files\SASHome\x86\SASFoundation\9.4\sas.exe)"
-sasopts <- "-nosplash -ls 75"
-
-# Make it easier to turn answers into rounded text
+# Make it easier to turn answers into rounded text 
 PrintNum <- function(x, acc = 0.01, percent = F, vec = F){
   if(percent){ 
     y <- scales::label_percent(accuracy = acc)(x)
@@ -65,17 +66,7 @@ PrintNum <- function(x, acc = 0.01, percent = F, vec = F){
                        ")"))
   return(y)
 }
-
-IMAGES_FOLDER <- here::here("analysis/Presentation Images")
-
 ```
 
 # Load data
 
-```{r}
-#| label: read mha
-
-reader <- SimpleITK::ImageFileReader()
-
-mha1 <- SimpleITK::MetaImageIO(here::here("../data/Malformations_X1118-131023151241.mha"))
-```
