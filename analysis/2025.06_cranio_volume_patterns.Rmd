@@ -342,7 +342,7 @@ vol_reg <- lm(reg_form, data = cranio_reg)
 demo_reg <- lm(demo_form, data = cranio_reg)
 ```
 
-The results from this model are presented in the table below. We use the variance-covariance matrix calculated by R to compute the variance of the bicoronal suture fusion effect, which is a linear combination of three parameters.
+The results from this model are presented in the table below. We use the variance-covariance matrix calculated by R to compute the variance of the bicoronal suture fusion effect for each of the 12 regions, which is a linear combination of three parameters.
 
 ```{r beta table}
 
@@ -742,7 +742,7 @@ Next, we estimate four longitudinal predictive models:
     
 \begin{equation}
 \begin{aligned}
-    Y_{r, i, t} = \ & \beta_{0, r} + \beta_{1, r} [\text{Metopic}] + \beta_{2, r} [\text{Sagittal}] + \\ 
+    Y_{r, i, t} = \ & \beta_{1, r} [\text{Metopic}] + \beta_{2, r} [\text{Sagittal}] + \\ 
     & \beta_{3, r} [\text{L. Coronal}] + \beta_{4, r} [\text{R. Coronal}] + \\
     & \beta_{5, r} [\text{LC}] * [\text{RC}] +
     \beta_{6, r} [\text{Age}] + \beta_{7, r} [\text{Sex}] + \\
@@ -754,7 +754,7 @@ Next, we estimate four longitudinal predictive models:
 
 \begin{equation}
 \begin{aligned}
-    Y_{r, i, t} = \ & \beta_{0, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
+    Y_{r, i, t} = \ & \beta_{1, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
     & \beta_{9, r} [(\text{Total Ref. Vol. Deviation})_{t-1}] + \\
     & \beta_{10, r} [Y_{r, i, t-1}] + \epsilon_{r, i, t}.
 \end{aligned}
@@ -764,7 +764,7 @@ Next, we estimate four longitudinal predictive models:
 
 \begin{equation}
 \begin{aligned}
-    Y_{r, i, t} = \ & \beta_{0, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
+    Y_{r, i, t} = \ & \beta_{1, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
     & \beta_{9, r} [(\text{Total Ref. Vol. Deviation})_{t-1}] + \\
     & f_r([Y_{r,i,t-1}], [Time_t - Time_{t-1}]) + \epsilon_{r, i, t}.
 \end{aligned}
@@ -774,7 +774,7 @@ Next, we estimate four longitudinal predictive models:
 
 \begin{equation}
 \begin{aligned}
-    Y_{r, i, t} = \ & \beta_{0, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
+    Y_{r, i, t} = \ & \beta_{1, r} + \cdots + \beta_{8, r} [\text{Image Type}] + \\
     & \beta_{9, r} [(\text{Total Ref. Vol. Deviation})_{t-1}] + \\
     & g([Y_{r,i,t-1}], [Time_t - Time_{t-1}]) + \epsilon_{r, i, t}.
 \end{aligned}
@@ -843,6 +843,10 @@ for(subj_i in 1:n_subj_mult){
                  names_to = c("region", ".value")) %>%
     group_by(region) %>%
     nest() %>%
+    ## Run models
+    # We exclude intercepts because mgcv functions have sum to zero constraint;
+    #   intercepts are difficult to interpret with smoother, and other models
+    #   we are comparing against the smoother should be as similar as possible
     mutate(
       simple_rpt_model = map(data, 
                              ~lm(vol_dev ~ 0 +
