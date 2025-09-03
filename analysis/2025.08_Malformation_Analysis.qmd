@@ -106,7 +106,7 @@ matrix_files <- list.files(MATRIX_FOLDER, pattern = "\\.")
 # Read in covariates data
 cranio_raw <- read_csv(file.path(DATA_FOLDER, "merged_covariates.csv"))
 
-# Establish constanta
+# Establish constants
 
 MAX_AGE <- 365
 ```
@@ -331,10 +331,13 @@ kbl(fusion_summ_sub, caption = "Fusions in Subset Data") %>%
 
 # Pointwise Difference Matrix Data
 
-Next, we load the malformation maps into one data set. Each malformation map is stored as a $500 \times 500$ matrix of pointwise absolute value differences, and is saved in its own RData file. We load each RData file in the remaining subset of images selected above, and convert each matrix into a `data.table` object. Then, we combine these all into one data.table and reshape this object from wide to long. The resulting data set contains 250,000 rows for each image with one column for the row index in the matrix, one column for the column index in the matrix, and one column containing the pointwise difference for that matrix cell.
+Next, we load the malformation maps into one data set. Each malformation map is stored as a $500 \times 500$ matrix of pointwise absolute value differences, and is saved in its own RData file. We load each RData file in the remaining subset of images selected above. Then, we reshape the data from wide to long, so that each row contains one pixel's row, column, and pointwise difference value. We then store this long data as a tibble nested in the "data" column. Fnially, we rearrange these data so that we can work with a data set with one row for each pixel, containing all participants' pointwise differences in that pixel.
 
 ```{r}
 #| label: load matrix files
+
+# Clear memory space
+rm(list = setdiff(ls(), c("cranio_sub", "DATA_FOLDER", "MATRIX_FOLDER"))); gc()
 
 # Define function to read each file
 load_matrix_data <- function(x){
@@ -347,83 +350,24 @@ load_matrix_data <- function(x){
   
   # Convert matrix to long format and remove values outside mask
   reduced_data <- pointwise_diff %>%
-    reshape2::melt(varnames = c("row", "col")) %>%
+    reshape2::melt(varnames = c("row", "col"), value.name = "diff") %>%
     as_tibble() %>%
-    drop_na(value)
+    drop_na(diff)
   
   return(list(reduced_data))
 }
 
-# Create minimal data of matrices
+# Create minimal matrix data
 cranio_matrix <- cranio_sub %>%
-  select(fname) %>% 
+  select(fname, age, sex, fusion_type) %>% 
   rowwise() %>%
   mutate(
     raw_data = load_matrix_data(fname)
   ) %>%
+  # Rearrange so each row is a pixel
   unnest(raw_data) %>%
   group_by(row, col) %>%
   nest()
-```
-
-
-```{r}
-#|label: load maps
-
-# Clear memory space
-
-rm(list = setdiff(ls(), c("cranio_sub", "MAP_F", "DATA_F"))); gc()
-
-# Save row number and convert to data.table for fast merging later
-cranio_sub %<>% mutate(image_num = 1:n()) %>% data.table()
-
-# Load region mask
-load(paste0(DATA_F, "region_labels_and_mask.RData"))
-
-# Convert to data.table for fast merges
-spherical_map_mask <- data.table(spherical_map_mask)
-region_labels <- data.table(region_labels)
-
-# Load in all malformation maps
-map_ls <- map(1:nrow(cranio_sub),
-              function(z){
-                load(paste0(MAP_F, cranio_sub$fname[z]))
-                
-                # Convert to data.table for quick manipulation
-                w <- data.table(pointwise_diff)[
-                  # Add file name
-                  , `:=`(
-                    image_num = z,
-                    row = as.numeric(1:.N))
-                ]
-                
-                w <- melt(w, 
-                          id.vars = c("row", "image_num"),
-                          variable.name = "col",
-                          value.name = "diff",
-                          variable.factor = FALSE)
-                
-                w[, col := as.numeric(stringi::stri_sub(col, from = 2))]
-                
-                # Merge on map mask
-                w[spherical_map_mask,
-                  on = c(row = "X", col = "Y"),
-                  in_mask := i.value]
-                
-                w <- w[in_mask == 1][, in_mask := NULL]
-                
-                if(z %% 50 == 0){ cat("On row", z, "\n") }
-                
-                return(w)
-              })
-
-# Merge these into the same data table
-map_dt <- rbindlist(map_ls)
-
-rm(map_ls); gc()
-
-# Bring image number back in front
-setcolorder(map_dt, c("image_num", "row", "col", "diff"))
 ```
 
 ## Mask Shape and Region Labels
@@ -431,45 +375,16 @@ setcolorder(map_dt, c("image_num", "row", "col", "diff"))
 Next, to reduce the size of the data, we merge in Josh's brain mask shape. We also add each pixel's region label to associate this analysis with previous analyses.
 
 ```{r}
-#| label: regions
+#|label: regions and mask
 
+# Load regions and mask
+load(paste0(DATA_FOLDER, "region_labels_and_mask.RData"))
 
-# option 1
-analysis_models <- analysis_data %>%
-  mutate(model = map(data, function(x){
-    
-    # merge with cranio_....
-    
-  })) %>%
-  dplyr::select(-c("data"))
-
-# Assign region labels
-map_dt[region_labels,
-       on = c(row = "X", col = "Y"),
-       region := i.value]
-
-map_dt[, region := factor(region)]
-
-rm(spherical_map_mask, region_labels); gc()
-```
-
-## Covariates Merge
-
-For easier analysis of these malformation maps, we then merge covariates onto this malformation map data set. Since the image data is large, this is a memory-intensive merge. To address this, we select very few covariates to merge. We keep the demographics age, sex, patient ID, and suture fusion category, and retain an image identifier to match with the covariates data.
-
-```{r}
-#| label: covariates and maps
-
-### Merge covariates to malformation maps
-
-# Left join cranio_sub_last onto map_dt;
-# Create new columns in map_dt coming from cranio_sub ("i")
-map_dt[cranio_sub, 
-       on = "image_num",
-       `:=`(id_base = i.id_base,
-            age = i.age, 
-            sex = i.sex,
-            fusion_type = i.fusion_type)]
+cranio_matrix %<>%
+  left_join(region_labels,
+            by = c("row" = "X", "col" = "Y")) %>% 
+  filter(value != 0) %>% 
+  rename(region = value)
 ```
 
 ## Pointwise Difference Visualizations
@@ -480,22 +395,27 @@ As a first visualization, we plot the regions by pixel.
 #| label: plot regions
 
 # Create dataset of only region assignment for each pixel
-map_regions <- unique(map_dt[, .(row, col, region)])
+matrix_region <- cranio_matrix %>% select(row, col, region) %>% 
+  distinct()
 
-# Identify regions' centrouds for labels
-map_region_ctr <- map_regions[, .(row = mean(row), col = mean(col)), .(region)]
+# Identify regions' centroids for labels
+matrix_region_center <- matrix_region %>% 
+  group_by(region) %>% 
+  summarize(row_center = mean(row),
+            col_center = mean(col)) %>% 
+  ungroup()
 
 # Plot regions
 # Note: We need to reverse the row and column indices to match the overhead view
 plot_regions <- ggplot() +
-  geom_raster(data = map_regions, 
-              aes(x = -row, y = -col, fill = region)) +
-  geom_text(data = map_region_ctr, 
-            aes(x = -row, y = -col, label = region)) +
+  geom_raster(data = matrix_region, 
+              aes(x = -row, y = -col, fill = factor(region))) +
+  geom_text(data = matrix_region_center, 
+            aes(x = -row_center, y = -col_center, label = factor(region))) +
   coord_fixed() +
   theme_void() +
   scale_fill_brewer(palette = "Set3", guide = "none") +
-  labs(title = "Region Map")
+  labs(title = "Region Map", fill = "Region")
 
 plot_regions
 ```
@@ -506,14 +426,26 @@ Next, we summarize the average differences by suture fusion and plot these avera
 ```{r}
 #| label: map fusions
 
+# Clear memory space
+rm(list = setdiff(ls(), c("cranio_sub", "cranio_matrix",
+                          "DATA_FOLDER", "MATRIX_FOLDER"))); gc()
+
 ### Summarize differences by fusions
 
 # Create dataset of average cell for each fusion
-map_fusion <- map_dt[, .(diff = mean(diff)), by = .(fusion_type, row, col)]
+matrix_fusion <- cranio_matrix %>% 
+  # Extract only fusion type and outcome from nested data
+  hoist(data, "fusion_type", "diff") %>% 
+  select(-c(data, region)) %>% 
+  unnest_longer(col = c(fusion_type, diff)) %>% 
+  # Summarize average by pixel and fusion type
+  group_by(row, col, fusion_type) %>% 
+  summarize(diff_avg = mean(diff)) %>% 
+  ungroup()
 
 # Plot brain map by fusion type
-plot_fusion <- ggplot(map_fusion) +
-  geom_raster(aes(x = -row, y = -col, fill = diff)) +
+plot_fusion <- ggplot(matrix_fusion) +
+  geom_raster(aes(x = -row, y = -col, fill = diff_avg)) +
   facet_wrap(~fusion_type) +
   coord_fixed() +
   theme_void() +
@@ -533,8 +465,9 @@ We add to this summary by showing how these averages change on average over time
 
 # Define age category cutoffs
 # First, find quantiles of ages in craniosynostosis patients
-age_cranio_quant <- quantile(cranio_sub[fusion_type != "None"]$age,
-                             prob = seq(0, 1, 0.2))
+age_cranio_quant <- cranio_sub %>% 
+  filter(fusion_type != "None") %$% 
+  quantile(age, prob = seq(0, 1, 0.2))
 
 # Next, use closest interpretable number of days
 age_breaks <- c(0, 61, 122, 183, 366, 1830, 3663)
@@ -546,19 +479,23 @@ age_break_labels <- map_chr(2:length(age_breaks),
                                     if_else(. == length(age_breaks), "", "<"), 
                                     age_breaks[.]))
 
-# Add 5 categories of age
-map_dt[,
-       age_bin := cut(age, 
-                      breaks = age_breaks, labels = age_break_labels, 
-                      right = FALSE, include.lowest = T)]
-
-# Take average pointwise differences in cell by fusion and age
-map_fusion_age <- map_dt[, .(diff = mean(diff)), 
-                         by = .(fusion_type, age_bin, row, col)]
+# Create dataset with fusion and age info
+matrix_age_fusion <- cranio_matrix %>% 
+  hoist(data, "fusion_type", "age", "diff") %>% 
+  select(-c(data, region)) %>% 
+  unnest_longer(col = c(fusion_type, age, diff)) %>% 
+  # Add age categories
+  mutate(age_bin = cut(age, 
+                       breaks = age_breaks, labels = age_break_labels, 
+                       right = FALSE, include.lowest = T)) %>% 
+  # Summarize average in these bins
+  group_by(row, col, fusion_type, age_bin) %>% 
+  summarize(diff_avg = mean(diff)) %>% 
+  ungroup()
 
 # Plot brain map by fusion type and age
-plot_fusion_age <- ggplot(map_fusion_age) +
-  geom_raster(aes(x = -row, y = -col, fill = diff)) +
+plot_fusion_age <- ggplot(matrix_age_fusion) +
+  geom_raster(aes(x = -row, y = -col, fill = diff_avg)) +
   facet_grid(fusion_type ~ age_bin,
              labeller = label_wrap_gen(width = 10)) +
   coord_fixed() +
@@ -574,18 +511,46 @@ plot_fusion_age
 ## Determine sample size for these averages
 
 # Count images per fusion and age bin
-size_fusion_age <- map_dt[
-  , .(n = uniqueN(image_num)),
-  by = .(fusion_type, age_bin)
-]
-
-# Reshape to match plot
-size_fusion_age <- dcast(size_fusion_age, fusion_type ~ age_bin, 
-                         value.var = "n")
+size_fusion_age <- cranio_sub %>% 
+  mutate(age_bin = cut(age, 
+                       breaks = age_breaks, labels = age_break_labels, 
+                       right = FALSE, include.lowest = T)) %>% 
+  group_by(fusion_type, age_bin) %>% 
+  summarize(n = n()) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = age_bin, values_from = n, id_cols = fusion_type)
 
 # Print table
 kbl(size_fusion_age, caption = "Fusion-Age Sample Size") %>% 
   kable_styling(full_width = F)
+```
+
+In order to gain a better understanding of the specific shape of the age effect, we plot average pointwise differences by age, stratified by region and fusion type.
+
+```{r}
+#| label: age effect
+
+# Check shape of age effect by region and fusion
+
+# Summarize by age, region, and fusion type; have option to round to nearest month
+matrix_age_region <- cranio_matrix %>% 
+  hoist(data, "fusion_type", "age", "diff") %>% 
+  select(-data) %>% 
+  unnest_longer(col = c(fusion_type, age, diff)) %>% 
+  mutate(age_round_month = round(age / 30)) %>% 
+  group_by(fusion_type, age, region) %>% 
+  summarize(diff_avg = mean(diff)) %>% 
+  ungroup()
+
+plot_age <- ggplot(matrix_age_region) +
+  # Plot 1 line over age for each region-fusion combo
+  geom_line(aes(x = age, y = diff_avg, 
+                color = fusion_type),
+            alpha = 0.4) +
+  facet_wrap(~region)
+
+# Print plot
+plot_age
 ```
 
 Finally, we consider how each fusion type might differ between the two natal sexes recorded in the data.
@@ -594,12 +559,18 @@ Finally, we consider how each fusion type might differ between the two natal sex
 #| label: fusion by sex
 
 # Take average pointwise differences in cell by fusion and sex
-map_fusion_sex <- map_dt[, .(diff = mean(diff)), 
-                         by = .(fusion_type, sex, row, col)]
+matrix_sex_fusion <- cranio_matrix %>% 
+  hoist(data, "fusion_type", "sex", "diff") %>% 
+  select(-c(data, region)) %>% 
+  unnest_longer(col = c(fusion_type, sex, diff)) %>% 
+  # Summarize average in these bins
+  group_by(row, col, fusion_type, sex) %>% 
+  summarize(diff_avg = mean(diff)) %>% 
+  ungroup()
 
 # Plot brain map by fusion type and age
-plot_fusion_sex <- ggplot(map_fusion_sex) +
-  geom_raster(aes(x = -row, y = -col, fill = diff)) +
+plot_fusion_sex <- ggplot(matrix_sex_fusion) +
+  geom_raster(aes(x = -row, y = -col, fill = diff_avg)) +
   facet_grid(fusion_type ~ sex,
              labeller = label_wrap_gen(width = 9)) +
   coord_fixed() +
@@ -615,267 +586,278 @@ plot_fusion_sex
 
 # Preliminary Models
 
-```{r}
-#| label: models set up
-
-# Clear memory for models
-rm(list = setdiff(ls(), c("map_dt"))); gc()
-
-# Add fusion indicators
-map_dt[
-  , `:=`(
-    fused_Sagittal = fifelse(fusion_type == "Sagittal", 1, 0),
-    fused_Metopic = fifelse(fusion_type == "Metopic", 1, 0),
-    fused_RCoronal = fifelse(fusion_type %in% c("Right Coronal", "Bicoronal"), 1, 0),
-    fused_LCoronal = fifelse(fusion_type %in% c("Left Coronal", "Bicoronal"), 1, 0)
-  )
-]
-```
-
-```{r}
-#| label: age effect
-
-# Check shape of age effect by region and fusion
-
-plot_age <- ggplot(
-  # Take average difference by age, fusion, and region
-  map_dt[
-    , .(diff = mean(diff, na.rm = T))
-    , .(age, region, fusion_type)
-  ]
-) +
-  # Plot 1 line over age for each region-fusion combo
-  geom_line(aes(x = age, y = diff, 
-                group = interaction(fusion_type, region),
-                color = region,
-                linetype = fusion_type),
-            alpha = 0.2)
-
-# Print plot
-plot_age
-```
-
+Next, we get a better understanding of how these demographics interact with fusion type through preliminary regression models. First, we regress the region-level average pointwise difference for each subject on fusion indicators, age, and sex. Based on the plot above, we include age as oen linear covariate as well as $log(age + 1)$.
 
 ```{r}
 #| label: region model
 
-# Clear memory
-rm(list = setdiff(ls(), c("map_dt"))); gc()
+# Clear memory space
+rm(list = setdiff(ls(), c("cranio_sub", "cranio_matrix",
+                          "DATA_FOLDER", "MATRIX_FOLDER"))); gc()
 
-# Split images by pixel; run separate regressions
+# Add fusion variables for regression
+fusion_dict <- tibble(
+  fusion_type = c("None", 
+                  "Sagittal", "Metopic", 
+                  "Right Coronal", "Bicoronal", "Left Coronal"),
+  fused_Sagittal = c(0, 1, 0, 0, 0, 0),
+  fused_Metopic = c(0, 0, 1, 0, 0, 0),
+  fused_RCoronal = c(0, 0, 0, 1, 1, 0),
+  fused_LCoronal = c(0, 0, 0, 0, 1, 1)
+)
 
-# Identify unique regions to loop over
-region_unique <- unique(map_dt[, .(region)])[order(region)]
-
-### Create list of models (1 for each region)
-# Was frequently running into memory issues, so this got broken down further
-# Used biglm to estimate the model on a subset and then recursively update
-model_ls_region <- map(
-  1:nrow(region_unique),
-  function(z, atatime = 1e4){ # Define num. rows to update with
-    
-    # Keep dataset of this region
-    dt <- map_dt[region == region_unique$region[z]]
-    
-    # Define number of rows for first model estimation
-    end_i <- pmin(atatime, nrow(dt))
-    
-    # Estimate model using biglm
-    m <- biglm(diff ~ 0 + 
-                 fused_Sagittal + fused_Metopic +
-                 fused_RCoronal * fused_LCoronal +
-                 age + I(log(age + 1)) + sex,
-               data = dt[1:end_i])
-    
-    # Define counter (first row in the subset for updates)
-    i <- end_i + 1
-    
-    # Use while loop to update the biglm model
-    while(i < nrow(dt)){
-      
-      # Define the last row of the next subset
-      end_i <- pmin(i + atatime, nrow(dt))
-      
-      # Update model with this newly bounded subset
-      m <- update(m, dt[i:end_i])
-      
-      # Update first row for the next subset
-      i <- end_i + 1
-    }
-    
-    ## Add bicoronal variance to final coefficients
-    
-    # Make constrast vector identifying all coronal variables
-    is_coronal <- as.numeric(str_detect(colnames(vcov(m)), "Coronal"))
-    
-    # Compute variance of bicoronal combination
-    bicoronal_v <- t(is_coronal) %*% vcov(m) %*% is_coronal
-    bicoronal_e <- t(is_coronal) %*% coef(m)
-    
-    # Add bicoronal as row in 
-    bicoronal_row <- tibble(
-      term = "fused_Bicoronal",
-      estimate = bicoronal_e,
-      std.error = sqrt(bicoronal_v)) %>% 
-      mutate(p.value = 2 * pnorm(abs(estimate / std.error), lower.tail = FALSE))
-    
-    # Output coefficient table (smaller than model)
-    return(tidy(m) %>% bind_rows(bicoronal_row))
-  })
+## Run models for average pointwise differences in each region
+cranio_region_models <- cranio_matrix %>% 
+  # Rearrange to incorporate subject data
+  unnest(data) %>% 
+  # Take average in each region for each image
+  group_by(fname, age, sex, fusion_type, region) %>% 
+  summarize(diff_avg = mean(diff)) %>% 
+  ungroup() %>%
+  # Add fusion indicators
+  left_join(fusion_dict) %>% 
+  # Nest region-specific data
+  group_by(region) %>% 
+  nest() %>% 
+  # Add linear model with no intercept
+  mutate(model = map(data,
+                     ~lm(diff_avg ~ 0 + 
+                           fused_Sagittal + fused_Metopic +
+                           fused_RCoronal * fused_LCoronal +
+                           age + I(log(age + 1)) + sex,
+                         data = .x)),
+         # Also try linear model with intercept
+         model_intercept = map(data,
+                               ~lm(diff_avg ~ 1 + 
+                                     fused_Sagittal + fused_Metopic +
+                                     fused_RCoronal * fused_LCoronal +
+                                     age + I(log(age + 1)) + sex,
+                                   data = .x))) %>% 
+  ## Add bicoronal variance to final coefficients; output coefficient summary
+  mutate(coeffs = map(model,
+                      function(m){
+                        
+                        # Make constrast vector identifying all coronal variables
+                        is_coronal <- as.numeric(str_detect(colnames(vcov(m)), "Coronal"))                        
+                        
+                        # Compute variance of bicoronal combination
+                        bicoronal_v <- t(is_coronal) %*% vcov(m) %*% is_coronal
+                        bicoronal_e <- t(is_coronal) %*% coef(m)
+                        
+                        # Add bicoronal as row in tidy summary
+                        bicoronal_row <- tibble(
+                          term = "fused_Bicoronal",
+                          estimate = bicoronal_e,
+                          std.error = sqrt(bicoronal_v)) %>% 
+                          mutate(p.value = 2 * pnorm(abs(estimate / std.error), lower.tail = FALSE))
+                        
+                        # Output coefficient table (smaller than model)
+                        return(tidy(m) %>% bind_rows(bicoronal_row))
+                      }),
+         ## Repeat with intercept added
+         coeffs_intercept = map(model_intercept,
+                                function(m){
+                                  
+                                  # Make constrast vector identifying all coronal variables
+                                  is_coronal <- as.numeric(str_detect(colnames(vcov(m)), "Coronal"))                        
+                                  
+                                  # Compute variance of bicoronal combination
+                                  bicoronal_v <- t(is_coronal) %*% vcov(m) %*% is_coronal
+                                  bicoronal_e <- t(is_coronal) %*% coef(m)
+                                  
+                                  # Add bicoronal as row in tidy summary
+                                  bicoronal_row <- tibble(
+                                    term = "fused_Bicoronal",
+                                    estimate = bicoronal_e,
+                                    std.error = sqrt(bicoronal_v)) %>% 
+                                    mutate(p.value = 2 * pnorm(abs(estimate / std.error), lower.tail = FALSE))
+                                  
+                                  # Output coefficient table (smaller than model)
+                                  return(tidy(m) %>% bind_rows(bicoronal_row))
+                                })
+  )
 
 # Combine region-level models and add region column
-model_df_region <- bind_rows(model_ls_region, .id = "region") %>% 
+model_region_summ <- bind_rows(cranio_region_models$coeffs, .id = "region") %>% 
   # Remove raw bicoronal interaction term (replaced with Bicoronal combo)
   filter(term != "fused_RCoronal:fused_LCoronal") %>% 
   arrange(region, -str_detect(term, "fused")) %>% 
-  mutate(region = as.factor(region),
+  mutate(region = as.numeric(region),
          term = fct_inorder(term)) %>% 
   data.table()
 
-# Generate pixel map with region labels
-map_regions <- unique(map_dt[, .(row, col, region)])
+# Create same summary for model with an intercept
+model_region_summ_intercept <- bind_rows(cranio_region_models$coeffs_intercept, .id = "region") %>% 
+  # Remove raw bicoronal interaction term (replaced with Bicoronal combo)
+  filter(term != "fused_RCoronal:fused_LCoronal") %>% 
+  arrange(region, -str_detect(term, "fused")) %>% 
+  mutate(region = as.numeric(region),
+         term = fct_inorder(term)) %>% 
+  data.table()
 
-map_region_ctr <- map_regions[, .(row = mean(row), col = mean(col)), .(region)]
+# Recreate pixel map with region labels
+matrix_region <- cranio_matrix %>% 
+  select(row, col, region) %>% 
+  distinct()
+
+# Identify regions' centroids for labels
+matrix_region_center <- matrix_region %>% 
+  group_by(region) %>% 
+  summarize(row_center = mean(row),
+            col_center = mean(col)) %>% 
+  ungroup()
 
 # Merge pixels to region-level coefficients
-map_regions <- map_regions[model_df_region, on = "region",
-                           allow.cartesian = TRUE]
+model_region_matrix <- matrix_region %>% 
+  left_join(model_region_summ, relationship = "many-to-many")
 
-plot_reg_region <- ggplot(map_regions) +
+model_region_matrix_intercept <- matrix_region %>% 
+  left_join(model_region_summ_intercept, relationship = "many-to-many")
+
+# Plot
+plot_reg_region <- ggplot(model_region_matrix) +
   geom_raster(aes(x = -row, y = -col, fill = estimate)) +
-  geom_text(data = map_region_ctr, aes(x = -row, y = -col, label = region)) +
+  geom_text(data = matrix_region_center, 
+            aes(x = -row_center, y = -col_center, label = region)) +
   facet_wrap(~term) +
   coord_fixed() +
   scale_fill_viridis_c(option = "turbo") +
-  theme_void()
+  theme_void() +
+  labs(title = "Region-Level No-Intercept Linear Model",
+       fill = "Coefficient")
+
+# Plot intercept version of the model
+plot_reg_region_intercept <- ggplot(model_region_matrix_intercept) +
+  geom_raster(aes(x = -row, y = -col, fill = estimate)) +
+  geom_text(data = matrix_region_center, 
+            aes(x = -row_center, y = -col_center, label = region)) +
+  facet_wrap(~term) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  labs(title = "Region-Level Intercept Linear Model",
+       fill = "Coefficient")
 
 plot_reg_region
+
+plot_reg_region_intercept
 ```
+
+To get a more detailed spatial perspective, we then run the same regression model on each individual pixel in the data. To save time, we do not calculate the variance estimate of these parameters; we only estimate the coefficients.
 
 ```{r}
 #| label: pixel model
 
-# Clear memory
-rm(list = setdiff(ls(), c("map_dt"))); gc()
+# Clear memory space
+rm(list = setdiff(ls(), c("cranio_sub", "cranio_matrix", "fusion_dict",
+                          "DATA_FOLDER", "MATRIX_FOLDER"))); gc()
 
-# Identify unique pixels to loop over
-pixels_unique <- unique(map_dt[, .(row, col)])[order(row, col)]
+## Run models for pointwise differences in each pixel
+cranio_pixel_models <- cranio_matrix %>% 
+  mutate(
+    model = map(data,
+                function(d){
+                  
+                  data_ind <- d %>% 
+                    left_join(fusion_dict, by = "fusion_type")
+                  
+                  data_mx <- model.matrix(~ 0 + 
+                                fused_Sagittal + fused_Metopic +
+                                fused_RCoronal * fused_LCoronal +
+                                age + I(log(age + 1)) + sex,
+                                data_ind)
+                  
+                  model <- lm.fit(y = d$diff, x = data_mx)
+                  
+                  return(model)
+                }
+    )) %>% 
+  ## Add bicoronal variance to final coefficients; output coefficient summary
+  mutate(coeffs = map(model,
+                      function(m){
+                        
+                        # Make constrast vector identifying all coronal variables
+                        is_coronal <- as.numeric(str_detect(names(coef(m)), "Coronal"))                        
+                        
+                        # Compute estimate of bicoronal combination
+                        bicoronal_e <- t(is_coronal) %*% coef(m)
+                        
+                        # Output coefficient table (smaller than model)
+                        return(c(coef(m), "fused_Bicoronal" = bicoronal_e))
+                      })
+  )
 
-model_ls_pixel <- map(
-  1:nrow(pixels_unique),
-  function(z, atatime = 1e4){ # Define num. rows to update with
-    
-    # Keep dataset of this region
-    dt <- map_dt[row == pixels_unique$row[z] &
-                   col == pixels_unique$col[z]]
-    
-    # Define number of rows for first model estimation
-    end_i <- pmin(atatime, nrow(dt))
-    
-    # Estimate model using biglm
-    m <- biglm(diff ~ 
-                 fused_Sagittal + fused_Metopic +
-                 fused_RCoronal * fused_LCoronal +
-                 age + I(log(age + 1)) + sex,
-               data = dt[1:end_i])
-    
-    # Define counter (first row in the subset for updates)
-    i <- end_i + 1
-    
-    # Use while loop to update the biglm model
-    while(i < nrow(dt)){
-      
-      # Define the last row of the next subset
-      end_i <- pmin(i + atatime, nrow(dt))
-      
-      # Update model with this newly bounded subset
-      m <- update(m, dt[i:end_i])
-      
-      # Update first row for the next subset
-      i <- end_i + 1
-    }
-    ## Add bicoronal variance to final coefficients
-    
-    # Make constrast vector identifying all coronal variables
-    is_coronal <- as.numeric(str_detect(colnames(vcov(m)), "Coronal"))
-    
-    # Compute variance of bicoronal combination
-    bicoronal_v <- t(is_coronal) %*% vcov(m) %*% is_coronal
-    bicoronal_e <- t(is_coronal) %*% coef(m)
-    
-    # Add bicoronal as row in 
-    bicoronal_row <- tibble(
-      term = "fused_Bicoronal",
-      estimate = bicoronal_e,
-      std.error = sqrt(bicoronal_v)) %>% 
-      mutate(p.value = 2 * pnorm(abs(estimate / std.error), lower.tail = FALSE))
-    
-    # Output coefficient table (smaller than model)
-    return(tidy(m) %>% bind_rows(bicoronal_row))
-  })
+# Combine pixel-level models and add region column
+model_pixel_summ <- cranio_pixel_models %>% 
+  select(row, col, coeffs) %>% 
+  mutate(coeffs = map(coeffs, ~enframe(., name = "term", value = "estimate"))) %>% 
+  unnest(coeffs) %>% 
+  # Remove raw bicoronal interaction term (replaced with Bicoronal combo)
+  filter(term != "fused_RCoronal:fused_LCoronal") %>% 
+  arrange(row, col, -str_detect(term, "fused")) %>% 
+  mutate(term = fct_inorder(term))
+
+# Plot
+plot_reg_pixel <- ggplot(model_pixel_summ) +
+  geom_raster(aes(x = -row, y = -col, fill = estimate)) +
+  facet_wrap(~term) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  labs(title = "Pixel-Level Linear Model",
+       fill = "Coefficient")
+
+plot_reg_pixel
 ```
 
-
-For a preliminary spatial model, we filter to the most frequent combination of fusion type, age range, and sex with craniosynostosis. This includes all images with Sagittal fusion between the ages of 61-121 days with sex = 1. Our model does not reflect the brain boundary and does not incorporate these other demographics. It is a generalized additive model with an intercept and a tensor product smooth of row and column indices.
+Next, for a preliminary spatial model, we split the data only by fusion type. Based on the plots above, the age and sex effects are basically uniform across all of the pixels, so we include these as linear terms that do not vary spatially. Otherwise, we only include a tensor spline interaction between row and column indices. Our model does not reflect the brain boundary. It is a generalized additive model with an intercept and a tensor product smooth of row and column indices.
 
 ```{r}
 #| label: preliminary gam
 
-# Count images by fusion, age, and sex
-size_fusion_age_sex <- map_dt[
-  , .(n = uniqueN(image_num)),
-  by = .(fusion_type, age_bin, sex)
-]
+# Clear memory space
+rm(list = setdiff(ls(all.names = TRUE), 
+                  c("cranio_sub", "cranio_matrix", "fusion_dict",
+                    "DATA_FOLDER", "MATRIX_FOLDER"))); gc()
 
-bin_max <- size_fusion_age_sex[fusion_type != "None"][n == max(n)]
+cranio_fusion_models <- cranio_matrix %>% 
+  unnest(data) %>% 
+  filter(!fusion_type %in% c("None")) %>% 
+  group_by(fusion_type) %>% 
+  nest() %>% 
+  mutate(model = map(data,
+                     ~bam(diff ~ age + I(log(age + 1)) + sex + te(row, col),
+                     data= .x))) %>% 
+  mutate(pred_data = map(
+    model,
+    ~get_predictions(.x,
+                     cond = list(
+                       "age" = median(cranio_sub$age),
+                       "sex" = 0,
+                       "row" = seq(from = min(cranio_matrix$row), 
+                                   to = max(cranio_matrix$row), 
+                                   length.out = 50),
+                       "col" = seq(from = min(cranio_matrix$col), 
+                                   to = max(cranio_matrix$col), 
+                                   length.out = 50))
+    )))
 
-# Print before deleting to save memory
-kbl(size_fusion_age_sex, caption = "Fusion-Sex-Age Sample Size")
-
-rm(size_fusion_age_sex); gc()
-
-# Run model on most common subset using coordinates and default knots
-model_sagittal <- gam(diff ~ te(row, col), 
-                      data = map_dt[fusion_type == bin_max$fusion_type & 
-                                      age_bin == bin_max$age_bin &
-                                      sex == bin_max$sex])
-
-# Generate predictions from this model in a new dataset
-new_dt <- get_predictions(model_sagittal, 
-                          cond = list("row" = seq(from = min(map_dt$row), 
-                                                  to = max(map_dt$row), 
-                                                  length.out = 50),
-                                      "col" = seq(from = min(map_dt$col), 
-                                                  to = max(map_dt$col), 
-                                                  length.out = 50)))
+cranio_fusion_model_summ <- cranio_fusion_models %>% 
+  select(fusion_type, pred_data) %>% 
+  unnest(pred_data)
 
 # Plot these predictions (in a rectangle shape)
-plot_model_sag <- ggplot(new_dt) +
-  geom_raster(aes(x = row, y = col, fill = fit)) +
+plot_model_fusion <- ggplot(cranio_fusion_model_summ) +
+  geom_raster(aes(x = -row, y = -col, fill = fit)) +
+  facet_wrap(~fusion_type) +
   coord_fixed() +
-  scale_fill_viridis_c() +
+  scale_fill_viridis_c(option = "turbo") +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
-  labs(title = "Sagittal Model",
+  labs(title = "Fusion-Specific GAM",
        fill = "Pred. Diff.")
 
-# Plot the averages in this dataset to compare
-plot_actual_sag <- ggplot(map_dt[fusion_type == "Sagittal" & 
-                         age_bin == "[61,122)" &
-                         sex == 1, 
-                         .(diff = mean(diff)), 
-                         by = .(row, col)]) +
-  geom_raster(aes(x = row, y = col, fill = diff)) +
-  coord_fixed() +
-  scale_fill_viridis_c() +
-  theme_void() +
-  theme(axis.text = element_blank(),
-        axis.ticks = element_blank()) +
-  labs(title = "Sagittal Average",
-       fill = "Avg. Diff")
-
-# Arrange these two plots side by side
-ggarrange(plot_actual_sag, plot_model_sag)
+plot_model_fusion
 ```
 
