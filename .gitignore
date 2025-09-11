@@ -12,3 +12,5 @@ drafts/*_cache/
 .Ruserdata
 .DS_Store
 output/unnamed*
+analysis/intermediate/covars_and_matrices.RData
+/analysis/intermediate
