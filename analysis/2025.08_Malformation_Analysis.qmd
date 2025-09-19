@@ -58,16 +58,40 @@ pacman::p_load(
   knitr, kableExtra, ggpubr, ggpmisc
 )
 
-# Define function for predicting GAM on new data
-GetPredictions_SimpleGAM <- function(model, newdata){
+# Define function for predicting GAM on new data (in homage to get_predictions)
+GetPredictions_FN <- function(model, newdata, 
+                              rm_effects = c("~"), # By default match nothing; assume no variable includes tilde
+                              ci_crit = 1.96){
+  
+  x <- newdata
   
   # Get design matrix of basis functions
-  nd_mat <- predict(model, newdata = newdata, type = "lpmatrix")
+  nd_mat <- predict(model, newdata = x, type = "lpmatrix")
+  
+  # Find the columns for effects we want to remove
+  rm_cols <- map(rm_effects, 
+                 ~grepv(., colnames(nd_mat), fixed = T)) %>% 
+    unlist() %>% unique()
+  
+  # For these columns, set (linear predictor) columns to 0
+  nd_mat[, rm_cols] <- 0
   
   # Get coefficients of the model
   m_coef <- coef(model)
   
+  # Calculate predictions
+  x$fit <- (nd_mat %*% m_coef) %>% as.vector()
   
+  # Calculate variances (without calculating all n x n covariances)
+  x$se <- (nd_mat %*% vcov(model) * nd_mat) %>% rowSums() %>% sqrt()
+  
+  # Add confidence interval
+  x %<>% mutate(
+    ci_ll = fit - ci_crit * se,
+    ci_ul = fit + ci_crit * se
+  )
+  
+  return(x)
 }
 
 # Set switches
@@ -76,6 +100,8 @@ DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
 
+# Set constants
+RM_IGNORE <- "DO|FN|IGNORE|FOLDER|cranio|_dict|so_"
 ```
 
 # Overview
@@ -84,16 +110,16 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Smoothed plots of age by fusion and region (@sec-age-smooth)
--   Written regression equations (@sec-prelim-models)
--   Preliminary models specific to region, pixel, and fusion now include smoothed age term (as a cubic regression spline), and plots show the shape of these splines
--   Intercepts are included in all models
--   Preliminary fusion-specific GAM plots include shading to show areas within the intracranial mask as opposed to outside of it (@sec-prelim-gam)
--   Test soap film smoother model fit to one subject, including boundary and grid of knots filtered to boundary (@sec-soap-film-1)
+-   Written regression equations now use FDA notation (@sec-prelim-models)
+-   Patients above the age of 5 were removed (@sec-age-summary)
+-   Preliminary fusion-specific GAM plots are wider and now include an outline to show area within the intracranial mask (@sec-prelim-gam)
+-   A soap film smoother object was created based on the data (@sec-soap-film-grid)
+-   Models were fit on individual patients using matrix multiplication: first with a loop on a subset (@sec-soap-film-loop), then using nested tibbles with a subset (@sec-soap-film-map), and finally on the entire data (@sec-soap-film-individual)
 
 ## Questions
 
 -   Is Moran's I statistic relevant to show whether any given subset of the data actually has spatial dependence? I'm especially wondering whether the normative patients' growth has significant spatial dependence, or whether there is spatial dependence for very young patients.
+-   Looking at a subset of the data, we can see that the images "sub-CNH_0002_dol-1295" and "sub-CNH_Cranio_00002_dol-61" have the exact same pointwise differences, even though the first is marked as having no fusion and the second is marked as having a Sagittal fusion. Are these the same image?
 
 ## Collaborator Questions
 
@@ -362,14 +388,14 @@ kbl(have_fusions_quant,
     caption = "Max. Age Options: Patients with Fusions") %>% 
   kable_styling(full_width = F)
 
-# Set maximum age as 5 years old
-max_age <- 365 * 5
+# Set maximum age as 3 years old
+max_age <- 365 * 3
 
 # Determine what percentile this corresponds to among patients with fusion
 max_age_summ <- tibble("Age Cap" = max_age, 
                        "Percentile" = mean(have_fusions$age <= max_age))
 
-max_age_summ
+kbl(max_age_summ, caption = "Age cap summary") %>% kable_styling(full_width = F)
 ```
 
 ```{r}
@@ -407,7 +433,7 @@ Next, we load the malformation maps into one data set. Each malformation map is 
 #| label: load matrix files
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = "DO|FOLDER|cranio")))
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE))))
 rm(cranio); gc(verbose = F)
 
 # Define function to read each file
@@ -546,7 +572,7 @@ Next, we summarize the growth by suture fusion and plot these averages on the br
 #| label: map fusions
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = "DO|FOLDER|cranio"))); gc(verbose = F)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 ### Summarize differences by fusions
 
@@ -751,7 +777,7 @@ $$
 #| label: region model
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = "DO|FOLDER|cranio"))); gc(verbose = F)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 # Add fusion variables for regression
 fusion_dict <- tibble(
@@ -767,14 +793,15 @@ fusion_dict <- tibble(
 # Recreate pixel map with region labels
 matrix_region <- cranio_matrix %>% 
   select(row, col, region) %>% 
-  distinct()
-
-# Identify regions' centroids for labels
-matrix_region_center <- matrix_region %>% 
+  distinct() %>% 
+  st_as_sf(coords = c("row", "col")) %>% 
   group_by(region) %>% 
-  summarize(row_center = mean(row),
-            col_center = mean(col)) %>% 
-  ungroup()
+  summarize(geometry = st_union(geometry)) %>% 
+  ungroup() %>% 
+  mutate(geometry = st_convex_hull(geometry)) %>% 
+  mutate(centroid = st_centroid(geometry))
+
+save(matrix_region, file = here::here("intermediate", "region_shape_object.rda"))
 
 if(DO_PRELIM_MODEL_REGION){
   
@@ -808,7 +835,7 @@ if(DO_PRELIM_MODEL_REGION){
                                   data = .x)))
   
   saveRDS(
-    cranio_region_models, 
+    region_models, 
     file = here::here("intermediate", 
                       "prelim_models_region.rds"))
   
@@ -857,7 +884,7 @@ region_models %<>%
                              ~full_join(.x, .y, by = "term"))) %>% 
   # Clean model summary
   mutate(coeffs_combo_cln = map(coeffs_combo, 
-                                ~ filter(., term != "fused_RCoronal:fused_LCoronal") %>% 
+                                ~filter(., term != "fused_RCoronal:fused_LCoronal") %>% 
                                   arrange(-str_detect(term, "fused")) %>% 
                                   mutate(term = fct_inorder(term))))
 
@@ -865,15 +892,13 @@ region_models %<>%
 model_region_matrix <- region_models %>% 
   select(region, coeffs_combo_cln) %>% 
   unnest(coeffs_combo_cln) %>% 
-  full_join(matrix_region, relationship = "many-to-many")
+  full_join(matrix_region, by = "region")
 
 # Plot parametric coefficients
 plot_region_smooth <- ggplot(model_region_matrix %>% filter(term != "age")) +
-  geom_raster(aes(x = row, y = col, fill = estimate_smooth)) +
-  geom_text(data = matrix_region_center, 
-            aes(x = row_center, y = col_center, label = region)) +
+  geom_sf(aes(geometry = geometry, fill = estimate_smooth), linewidth = 0) +
+  geom_sf_text(aes(geometry = centroid, label = region)) +
   facet_wrap(~term) +
-  coord_fixed() +
   scale_fill_viridis_c(option = "turbo") +
   theme_void() +
   labs(title = "Region-Level Smooth Age Model",
@@ -882,11 +907,9 @@ plot_region_smooth <- ggplot(model_region_matrix %>% filter(term != "age")) +
 
 # Plot parameters from alternate version of the model
 plot_region_linear <- ggplot(model_region_matrix) +
-  geom_raster(aes(x = row, y = col, fill = estimate_linear)) +
-  geom_text(data = matrix_region_center, 
-            aes(x = row_center, y = col_center, label = region)) +
+  geom_sf(aes(geometry = geometry, fill = estimate_linear), linewidth = 0) +
+  geom_sf_text(aes(geometry = centroid, label = region)) +
   facet_wrap(~term) +
-  coord_fixed() +
   scale_fill_viridis_c(option = "turbo") +
   theme_void() +
   labs(title = "Region-Level Linear Age Model",
@@ -900,7 +923,7 @@ plot_region_smooth
 
 ## Plot smoothed effect
 # Define range for predictions
-region_smooth_newdata <- tibble(
+newdata_cranio_age <- tibble(
   fused_Sagittal = 0,
   fused_Metopic = 0,
   fused_RCoronal = 0,
@@ -911,46 +934,29 @@ region_smooth_newdata <- tibble(
             length.out = 30)
 )
 
+# Calculate predicted values and Conf Ints
 model_region_smooth <- region_models %>% 
   select(region, model) %>% 
   # Add predictions from smooth term
   mutate(smooth_pred = map(
     model, 
-    
-    ~get_predictions(., 
-                     cond = list(sex = 1,
-                                 age = seq(min(cranio_sub$age), 
-                                           max(cranio_sub$age),
-                                           length.out = 30)), 
-                     se = TRUE, f = 1.96,
-                     print.summary = FALSE))) %>% 
-  
+    ~GetPredictions_FN(
+      model = .x, newdata = newdata_cranio_age))) %>% 
   select(-model) %>% 
-  unnest(smooth_pred) %>% 
-  mutate(ci_ll = fit - CI,
-         ci_ul = fit + CI)
+  unnest(smooth_pred)
 
 # Add linear age effect to compare
 model_region_linear <- region_models %>% 
   select(region, model_linear) %>% 
-  mutate(newdata = list(tibble(fused_Sagittal = 0,
-                          fused_Metopic = 0,
-                          fused_RCoronal = 0,
-                          fused_LCoronal = 0,
-                          sex = 1,
-                          age = seq(min(cranio_sub$age), 
-                                    max(cranio_sub$age),
-                                    length.out = 30))
-  )) %>% 
-  ungroup() %>% 
-  mutate(lin_pred = map2(
-    model_linear, newdata,
-    ~predict(.x, newdata = newdata[[1]], se.fit = TRUE) %>% 
+  mutate(pred_data = list(newdata_cranio_age),
+         lin_pred = map(
+    model_linear,
+    ~predict(.x, newdata = newdata_cranio_age, se.fit = TRUE) %>% 
       as.data.frame())) %>% 
   select(-model_linear) %>% 
-  unnest(c(newdata, lin_pred)) %>% 
+  unnest(c(pred_data, lin_pred)) %>% 
   mutate(ci_ll = fit - 1.96 * se.fit,
-         ci_ul = fit + 1.96 + se.fit)
+         ci_ul = fit + 1.96 * se.fit)
 
 # Combine smooth and linear predictions
 model_region_combo <- model_region_smooth %>% 
@@ -964,14 +970,16 @@ model_region_combo <- model_region_smooth %>%
 
 # Plot 1 smoothed effect per region
 plot_region_smooth_pred <- ggplot(model_region_combo) +
-  geom_line(aes(x = age, y = fit, color = factor(region), linetype = rev(type))) +
-  geom_ribbon(aes(x = age, ymin = ci_ll, ymax = ci_ul, 
+  geom_line(aes(x = age, y = fit, 
+                color = factor(region), linetype = rev(type))) +
+  geom_ribbon(aes(x = age, 
+                  ymin = ci_ll, ymax = ci_ul, 
                   fill = factor(region),
                   linetype = type),
-              alpha = 0.1) +
+              alpha = 0.3) +
   facet_wrap(~type, nrow = 1) +
   scale_linetype(guide = "none") +
-  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Male)", 
+  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Female)", 
        color = "Region", fill = "Region") +
   theme_minimal() +
   theme(legend.position = "bottom")
@@ -992,7 +1000,7 @@ $$
 G_{i}(x,y) = {} & \beta_{0}(x,y) + \beta_{1}(x,y) [\text{Sagittal}]_i + \beta_{2}(x,y) [\text{Metopic}]_i + \\
 & \beta_{3}(x,y) [\text{Right Coronal}]_i + \beta_{4}(x,y) [\text{Left Coronal}]_i + \\
 & \beta_{5}(x,y) [\text{Left and Right Coronal}]_i + \\
-& \beta_{6}(x,y) [\text{Sex: Male}]_i + f(x,y, Age_i) + \epsilon_{i}(x,y)
+& \beta_{6}(x,y) [\text{Sex: Male}]_i + f^{(x,y)}(Age_i) + \epsilon_{i}(x,y)
 \end{split} \\ \\
 \epsilon_{i}(x,y) \,{\buildrel iid \over \sim}\,{} N(0, \sigma^2(x,y))
 \end{gather*}
@@ -1002,7 +1010,7 @@ $$
 #| label: pixel model
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = "DO|FOLDER|cranio"))); gc(verbose = FALSE)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 if(DO_PRELIM_MODEL_PIXEL){
   
@@ -1061,18 +1069,10 @@ if(DO_PRELIM_MODEL_PIXEL){
     # Add plot of smoothed term
     mutate(smooth_pred = map(
       model, 
-      ~get_predictions(., 
-                       cond = list(sex = 1,
-                                   age = seq(min(cranio_sub$age), 
-                                             max(cranio_sub$age),
-                                             length.out = 20)), 
-                       se = TRUE, f = 1.96,
-                       print.summary = FALSE))) %>% 
-    
+      ~GetPredictions_FN(
+        model = .x, newdata = newdata_cranio_age))) %>% 
     select(-model) %>% 
-    unnest(smooth_pred) %>% 
-    mutate(ci_ll = fit - CI,
-           ci_ul = fit + CI)
+    unnest(smooth_pred)
   
   save(model_pixel_summ, model_pixel_smooth,
        file = here::here("intermediate", 
@@ -1099,7 +1099,7 @@ plot_pixel_pred <- ggplot(model_pixel_smooth) +
                 group = interaction(row, col),
                 color = factor(region)),
             alpha = 0.05, linewidth = 0.05) +
-  labs(x = "Age (Days)", y = "Predicted Growth", 
+  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Female)", 
        color = "Region") +
   theme_minimal() +
   scale_color_viridis_d() +
@@ -1121,15 +1121,17 @@ $$
 G_{si}(x,y) = {} & \beta_{0, s} + \beta_{1,s} [\text{Sex: Male}]_i + \\
 & f_{s}(Age_i) + h_s(x, y) + \epsilon_{si}(x,y)
 \end{split} \\ \\
-\epsilon_{si}(x,y) \,{\buildrel iid \over \sim}\,{} N(0, \sigma^2_s)
+\epsilon_{si}(x,y) \,{\buildrel iid \over \sim}\,{} N(0, \sigma^2_s).
 \end{gather*}
 $$
+
+Predictions from this model are shown below, with the brain shape outlined in the middle.
 
 ```{r}
 #| label: preliminary gam
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = "DO|FOLDER|cranio"))); gc(verbose = FALSE)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 if(DO_PRELIM_MODEL_FUSION){
   
@@ -1155,24 +1157,28 @@ if(DO_PRELIM_MODEL_FUSION){
   fusion_models <- readRDS(
     file = here::here("intermediate", "prelim_models_fusion_te.rds")) }
 
+# Set new data for GAM
+newdata_fusiongam <- tibble(
+  fused_Sagittal = 0,
+  fused_Metopic = 0,
+  fused_RCoronal = 0,
+  fused_LCoronal = 0,
+  sex = 0,
+  age = 365,
+  row = list(seq(from = (min(cranio_bound_matrix$row) - 30), 
+                 to = (max(cranio_bound_matrix$row) + 30), 
+                 length.out = 50)),
+  col = list(seq(from = (min(cranio_bound_matrix$col) - 30), 
+                 to = (max(cranio_bound_matrix$col) + 30), 
+                 length.out = 50))
+) %>% 
+  unnest_longer(row) %>% unnest_longer(col)
+
 fusion_models  %<>% 
   # Predict from this model for spatial pattern (1 year old male)
   mutate(pred_data = map(
     model,
-    ~get_predictions(.x,
-                     cond = list(
-                       "age" = 365,
-                       "sex" = 1,
-                       "row" = seq(from = min(cranio_matrix$row), 
-                                   to = max(cranio_matrix$row), 
-                                   length.out = 50),
-                       "col" = seq(from = min(cranio_matrix$col), 
-                                   to = max(cranio_matrix$col), 
-                                   length.out = 50)
-                     ),
-                     se = TRUE, f = 1.96,
-                     print.summary = FALSE
-    )))
+    ~GetPredictions_FN(.x, newdata = newdata_fusiongam)))
 
 # Flatten predictions into their own data
 fusion_model_summ <- fusion_models %>% 
@@ -1191,10 +1197,14 @@ plot_model_fusion <- ggplot() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
   labs(title = "Fusion-Specific GAM",
-       fill = "Pred. Growth\n(1 y.o. M)") +
+       fill = "Pred. Growth\n(1 y.o. F)") +
   theme(legend.position = "bottom")
 
 plot_model_fusion
+
+# Add row and column to age smooth new-data (to be cancelled out)
+newdata_age_gam <- newdata_cranio_age %>% 
+  mutate(row = 0, col = 0)
 
 ## Extract age smoothed predictions
 model_fusion_smooth <- fusion_models %>% 
@@ -1202,18 +1212,11 @@ model_fusion_smooth <- fusion_models %>%
   # Add plot of smoothed term
   mutate(smooth_pred = map(
     model, 
-    ~get_predictions(., 
-                     cond = list(sex = 1,
-                                 age = seq(min(cranio_sub$age), 
-                                           max(cranio_sub$age),
-                                           length.out = 30)), 
-                     se = TRUE, f = 1.96,
-                     print.summary = FALSE))) %>% 
-  
+    ~GetPredictions_FN(.x, 
+                       newdata = newdata_age_gam,
+                       rm_effects = c("row", "col")))) %>% 
   select(-model) %>% 
-  unnest(smooth_pred) %>% 
-  mutate(ci_ll = fit - CI,
-         ci_ul = fit + CI)
+  unnest(smooth_pred)
 
 # Plot 1 smoothed effect per fusion type
 plot_fusion_pred <- ggplot(model_fusion_smooth) +
@@ -1242,15 +1245,17 @@ kbl(model_fusion_params,
 
 ```
 
-# Individual Soap Film Models {#sec-soap-film-1}
+# Individual Soap Film Models
 
 Next, we introduce the soap film smoother. To fit this model, we first need to create the boundary that determines the extent of the model and the set of knots in $\mathbb{R}^2$ that will define the smoothing functions.
+
+## Soap Film Grid  {#sec-soap-film-grid}
 
 ```{r}
 #| label: soap infrastructure
 
 ## Create boundary as list
-cranio_bound <- list(
+bound_list <- list(
   list(row = cranio_bound_matrix$row,
        col = cranio_bound_matrix$col)
 )
@@ -1288,7 +1293,9 @@ grid_viz <- ggplot() +
 grid_viz
 ```
 
-Next, we use the set of row and column indices to create a design matrix of 2-dimensional smoothers that can be used for every individual image.
+## Smoother Object {#sec-soap-film-smoothcon}
+
+Next, we use the set of row and column indices (shared among all images) to create a design matrix of 2-dimensional smoothers that can be used for every individual image. We use the `mgcv::smoothCon` function.
 
 ```{r}
 #| label: soap film basis
@@ -1297,63 +1304,564 @@ Next, we use the set of row and column indices to create a design matrix of 2-di
 matrix_generic <- cranio_matrix %>% 
   select(row, col)
 
-# Generate soap film smoother object
-cranio_so_smooth <- smoothCon(
-  s(row, col, bs = "so", xt = list(bnd = cranio_bound)),
+save(matrix_generic, file = here::here("intermediate", "matrix_indices.rda"))
+
+# Construct soap film smoother object
+cranio_soap <- smoothCon(
+  s(row, col, bs = "so", xt = list(bnd = bound_list)),
   data = matrix_generic, knots = grid_k
 )
+
+# Keep the actual smooth list
+cranio_soap <- cranio_soap[[1]]
 ```
 
+### Smoother Model Components {#sec-soap-film-components}
+
+From this smoother object, we extract the relevant matrices that will allow us to fit the model: the design matrix $X$ and the penalty matrices for to the boundary and interior splines ($S_1$ and $S_2$ respectively). The smoother object stored the penalty matrices as size $n \times n$, even though $n = k_1 + k_2$, where $k_1$ is the dimension of the boundary spline and $k_2$ is the dimension of the interior film spline. Therefore, we extract each individual matrix excluding the block 0 matrices.
+
+We estimate the coefficients for this model using the closed-form expression
+$$
+\hat{\boldsymbol{\beta}} = (\mathbf{X}^\top \mathbf{X} + \lambda \mathbf{S})^{-1}\mathbf{X}^\top \mathbf{y}
+$$
+
+We currently run a grid search to find the optimal smoothing penalty constant $\lambda$ (called "sp" in mgcv). We use the range $10^{-9}, ..., 10^{-2}$. We then select the model that achieves the minimum generalized cross-validation ("GCV") score:
+$$
+\begin{gather*}
+GCV = \frac{n \sum_{x,y} [G(x,y) - \hat{f}(x,y)]^2}{[n - tr(\mathbf{H})]^2} \\
+\mathbf{H} = \mathbf{X} (\mathbf{X}^\top \mathbf{X} + \lambda \mathbf{S})^{-1}\mathbf{X}^\top \\
+tr(\mathbf{H}) = tr((\mathbf{X}^\top \mathbf{X} + \lambda \mathbf{S})^{-1}\mathbf{X}^\top \mathbf{X} )
+\end{gather*}
+$$
+
+Last, we reshape our data to include one row for each patient, with a nested data set of row indices, column indices, and pointwise differences.
 
 ```{r}
-#| label: prelim soap
+#| label: soap film matrices
 
-## Filter to one patient for test model
-single_matrix <- cranio_matrix %>% 
+# Clear memory space
+rm(cranio_bound_matrix, cranio_bound_shape)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+# Define model matrix
+so_X <- cranio_soap$X
+
+# Identify sample size
+so_n <- nrow(so_X)
+
+# Identify boundary and film penalty matrices
+S_bound0 <- cranio_soap$S[[1]]
+S_film0 <- cranio_soap$S[[2]]
+
+# Identify different parts of penalty matrix
+cols_bound <- which(apply(S_bound0, 2, sum) != 0)
+cols_film <- which(apply(S_film0, 2, sum) != 0)
+
+# Get interior "film" design and penalty matrices
+so_X_film <- so_X[, cols_film]
+S_film <- S_film0[cols_film, cols_film]
+
+save(so_X_film, 
+     file = here::here("intermediate", "design_matrix_interior.rData"))
+
+# Define grid for penalty term optimization
+lambdas_film <- 10^(-7:-1)
+lambdas_bound <- lambdas_film
+
+## Calculate other necessary objects that only depend on X and penalty constant:
+# 1. "visor" matrix for each penalty constant (hat without the first X)
+# 2. Trace of hat matrix (with X cycled to end)
+
+# First, only interior film
+so_constants_film <- tibble("sp" = lambdas_film) %>% 
+  mutate(visor = map(sp,
+                     ~solve(t(so_X_film) %*% so_X_film + 
+                              .x * S_film) %*%
+                       t(so_X_film))) %>% 
+  mutate(hat_trace = map_dbl(visor, ~sum(diag(.x %*% so_X_film))))
+
+# Next, boundary and interior
+so_constants <- tibble(
+  expand.grid("sp_film" = lambdas_film, "sp_bound" = lambdas_bound)
+  ) %>% 
+  mutate(visor = map2(sp_film, sp_bound,
+                      ~solve(t(so_X) %*% so_X +
+                               (.x * S_bound0 + .y * S_film0)) %*%
+                        t(so_X))) %>% 
+  mutate(hat_trace = map_dbl(visor, ~sum(diag(.x %*% so_X)))) %>% 
+  mutate(constant_row = 1:n())
+
+## Reshape data to have pointwise differences for each image
+cranio_models <- cranio_matrix %>% 
   unnest(data) %>% 
-  filter(fusion_type == "Sagittal") %>% 
-  filter(fname == first(fname))
+  select(fname, fusion_type, row, col, diff) %>% 
+  group_by(fname, fusion_type) %>% 
+  nest() %>% 
+  ungroup()
 
-## Fit soap film
-single_soap <- gam(diff ~ cranio_so_smooth,
-                   data = single_matrix, method = "REML")
+# Test with small subset of data
+so_test_df <- cranio_models %>% 
+  group_by(fusion_type) %>% 
+  slice(1) %>% 
+  ungroup()
 
-## Plot predictions from soap film
+# Remove old objects
+rm(cranio_matrix, newdata_cranio_age); gc()
+```
 
-# Predict on a denser grid than the knots
-single_soap_pred <- get_predictions(
-  single_soap, rm.ranef = FALSE, se = TRUE, f = 1.96,
-  cond = list(
-    row = seq(min(bound_matrix$row), max(bound_matrix$row), 
-              length.out = 50),
-    col = seq(min(bound_matrix$col), max(bound_matrix$col),
-              length.out = 50)
-  )) %>% 
-  # Remove NA predictions outside boundary
-  filter(!is.na(fit))
+```{r}
+#| label: check duplicate data
 
-# Plot predictions
-plot_single_soap <- ggplot(single_soap_pred) +
+# Find instances where average of all observations is the same
+dup_avgs <- cranio_models %>% 
+  mutate(diff_avg = map_dbl(data, ~mean(.$diff))) %>% 
+  select(-data) %>% 
+  group_by(diff_avg) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(n > 1) %>% 
+  arrange(desc(n), diff_avg)
+```
+
+## Model Fitting without Boundary
+
+### Data subset nested Loop {#sec-film-loop}
+
+To test the model fit process, we take a subset of the data, only keeping the first appearance of each suture fusion type. We then run a nested for loop to fit the soap film model on each image and for each potential smoothing penalty constant. Plots of the GCV and details for the optimal fits are below.
+
+```{r}
+#| label: prelim film loop
+
+# Run loop over individuals and potential penalty constants
+film_loop_df <- NULL
+
+for(i in 1:nrow(so_test_df)){
+  for(j in 1:nrow(so_constants_film)){
+    
+    # Data to fit model on
+    d <- so_test_df$data[[i]]
+    
+    # File name to identify output
+    f <- so_test_df$fname[i]
+    
+    # Matrix helpful for influence and coefficients
+    reg_mx_film <- so_constants_film$visor[[j]]
+    
+    trace_H_film <- so_constants_film$hat_trace[[j]]
+    
+    # Outcome vector
+    soap_y <- d$diff
+    
+    # Coefficient estimates
+    soap_b_film <- reg_mx_film %*% soap_y
+    
+    # Fitted values and square residuals
+    soap_fit <- so_X_film %*% soap_b_film
+    soap_sqresid <- (soap_y - soap_fit)^2
+    
+    # GCV score
+    soap_gcv <- (so_n * sum(soap_sqresid)) / (so_n - trace_H_film)^2
+    
+    out_dl <- tibble_row(
+      "fname" = f,
+      "sp" = so_constants_film$sp[[j]],
+      "beta" = list(soap_b_film), 
+      "fit" = list(soap_fit), 
+      "gcv" = soap_gcv)
+    
+    film_loop_df %<>% bind_rows(out_dl)
+  }}
+
+# Plot GCV from test models
+film_loop_gcv_plot <- ggplot(film_loop_df) +
+  geom_line(aes(x = sp, y = gcv)) +
+  facet_wrap(~fname, scales = "free_y") +
+  scale_x_continuous(transform = "log10")
+
+film_loop_gcv_plot
+
+# Take model with lowest GCV for each patient
+film_loop_optim <- film_loop_df %>% 
+  arrange(fname, gcv, desc(sp)) %>% 
+  group_by(fname) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  left_join(so_test_df, by = "fname")
+
+kbl(film_loop_optim %>% 
+      select(fname, fusion_type, sp, gcv), 
+    caption = "First Subset: Optimal Fit for each Patient") %>% 
+  kable_styling(full_width = F)
+
+# Extract data and fitted values for plotting
+film_loop_optim_fit <- film_loop_optim %>% 
+  select(fname, fusion_type, fit, data) %>% 
+  unnest(c(fit, data))
+
+# Keep predicted and actual plots consistent
+film_loop_range <- film_loop_optim_fit %$%
+  c(
+    min(c(min(diff), min(fit))),
+    max(c(max(diff), max(fit)))
+  )
+
+# Plot model with lowest GCV for each patient
+plot_loop_film <- ggplot(film_loop_optim_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo") +
+  scale_fill_viridis_c(option = "turbo", limits = film_loop_range) +
   labs(x = NULL, y = NULL, fill = "Pred. Growth") +
   coord_fixed() +
   theme_void() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
 
 # Plot actual observations
-plot_single_mx <- ggplot(single_matrix) +
+plot_loop_film_data <- ggplot(film_loop_optim_fit) +
   geom_raster(aes(x = row, y = col, fill = diff)) +
-  scale_fill_viridis_c(option = "turbo") +
+  scale_fill_viridis_c(option = "turbo", limits = film_loop_range) +
   labs(x = NULL, y = NULL, fill = "Actual Growth") +
   coord_fixed() +
   theme_void() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
 
 # Combine and print
-plot_single_both <- ggarrange(plot_single_mx, plot_single_soap)
-plot_single_both
+loop_film_both <- ggarrange(plot_loop_film, 
+                            plot_loop_film_data, 
+                            ncol = 1)
+loop_film_both
 
-## Get soap film model matrix
-single_soap_mx <- predict(single_soap, type = "lpmatrix")
+```
+
+### Data subset vectorized {#sec-film-map}
+
+Next, we try to replicate this process by nesting everything within a dataset.
+
+```{r}
+#| label: prelim film map
+
+# Clear memory space
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+# Add model fits to data frame
+film_map_df <- so_test_df %>%
+  # Expand data to one row per patient and penalty constant
+  mutate(constants = list(so_constants_film)) %>%
+  unnest(constants) %>% 
+  # Estimate coefficients
+  mutate(coeffs = map2(visor, data,
+                       ~.x %*% .y$diff)) %>% 
+  # Fitted values
+  mutate(fit = map(coeffs, ~ so_X_film %*% .x)) %>% 
+  # Square residuals
+  mutate(ssr = map2_dbl(data, fit,
+                        ~ sum((.x$diff - .y)^2))) %>% 
+  # GCV Score
+  mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+
+# Extract best model by GCV
+film_map_optim <- film_map_df %>% 
+  arrange(fname, gcv, desc(sp)) %>% 
+  group_by(fname) %>% 
+  slice(1) %>% 
+  ungroup()
+
+kbl(film_map_optim %>% 
+      select(fname, fusion_type, sp, gcv), 
+    caption = "First Subset: Optimal Fit by Map/Mutate") %>% 
+  kable_styling(full_width = F)
+
+# Extract data and fitted values for plotting
+film_map_optim_fit <- film_map_optim %>% 
+  select(fname, fusion_type, fit, data) %>% 
+  unnest(c(fit, data))
+
+# Keep predicted and actual plots consistent
+film_map_range <- film_map_optim_fit %$%
+  c(
+  min(c(min(diff), min(fit))),
+  max(c(max(diff), max(fit)))
+)
+
+# Plot model with lowest GCV for each patient
+plot_map_film <- ggplot(film_map_optim_fit) +
+  geom_raster(aes(x = row, y = col, fill = fit)) +
+  scale_fill_viridis_c(option = "turbo", limits = film_map_range) +
+  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
+
+# Plot actual observations
+plot_map_film_data <- ggplot(film_map_optim_fit) +
+  geom_raster(aes(x = row, y = col, fill = diff)) +
+  scale_fill_viridis_c(option = "turbo", limits = film_map_range) +
+  labs(x = NULL, y = NULL, fill = "Actual Growth") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
+
+# Combine and print
+map_film_both <- ggarrange(plot_map_film, 
+                           plot_map_film_data, 
+                           ncol = 1)
+map_film_both
+
+```
+
+## Model Fitting with Boundary
+
+### Data subset nested loop {#sec-soap-loop}
+
+To test the model fit process, we take a subset of the data, only keeping the first appearance of each suture fusion type. We then run a nested for loop to fit the soap film model on each image and for each potential smoothing penalty constant. Plots of the GCV and details for the optimal fits are below.
+
+```{r}
+#| label: prelim soap loop
+
+# Clear memory space
+rm(list = ls(pattern = "_film"))
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+# Run loop over individuals and potential penalty constants
+soap_loop_df <- NULL
+
+for(i in 1:nrow(so_test_df)){
+  for(j in 1:nrow(so_constants)){
+    
+    # Data to fit model on
+    d <- so_test_df$data[[i]]
+    
+    # File name to identify output
+    f <- so_test_df$fname[i]
+    
+    # Matrix helpful for influence and coefficients
+    reg_mx <- so_constants$visor[[j]]
+    
+    trace_H <- so_constants$hat_trace[j]
+    
+    # Outcome vector
+    soap_y <- d$diff
+    
+    # Coefficient estimates
+    soap_b <- reg_mx %*% soap_y
+    
+    # Fitted values and square residuals
+    soap_fit <- so_X %*% soap_b
+    soap_sqresid <- (soap_y - soap_fit)^2
+    
+    # GCV score
+    soap_gcv <- (so_n * sum(soap_sqresid)) / (so_n - trace_H)^2
+    
+    out_dl <- tibble_row(
+      "fname" = f,
+      "sp_bound" = so_constants$sp_bound[[j]],
+      "sp_film" = so_constants$sp_film[[j]],
+      "beta" = list(soap_b), 
+      "fit" = list(soap_fit), 
+      "gcv" = soap_gcv)
+    
+    soap_loop_df %<>% bind_rows(out_dl)
+  }}
+
+# Plot GCV from test models
+soap_loop_gcv_plot <- ggplot(soap_loop_df) +
+  geom_raster(aes(x = sp_bound, y = sp_film, fill = gcv)) +
+  facet_wrap(~fname, scales = "free_y") +
+  scale_x_continuous(transform = "log10") +
+  scale_y_continuous(transform = "log10") +
+  scale_fill_continuous(transform = "log")
+
+soap_loop_gcv_plot
+
+# Take model with lowest GCV for each patient
+soap_loop_optim <- soap_loop_df %>% 
+  arrange(fname, gcv, desc(sp_film), desc(sp_bound)) %>% 
+  group_by(fname) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  left_join(so_test_df, by = "fname")
+
+kbl(soap_loop_optim %>% 
+      select(fname, fusion_type, sp_bound, sp_film, gcv), 
+    caption = "First Subset: Optimal Fit for each Patient",
+    scientific = TRUE,
+    digits = 8) %>% 
+  kable_styling(full_width = F)
+
+# Extract data and fitted values for plotting
+soap_loop_optim_fit <- soap_loop_optim %>% 
+  select(fname, fusion_type, fit, data) %>% 
+  unnest(c(fit, data))
+
+# Keep predicted and actual plots consistent
+soap_loop_range <- soap_loop_optim_fit %$%
+  c(
+  min(c(min(diff), min(fit))),
+  max(c(max(diff), max(fit)))
+)
+
+# Plot model with lowest GCV for each patient
+plot_loop_soap <- ggplot(soap_loop_optim_fit) +
+  geom_raster(aes(x = row, y = col, fill = fit)) +
+  scale_fill_viridis_c(option = "turbo", limits = soap_loop_range) +
+  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
+
+# Plot actual observations
+plot_loop_soap_data <- ggplot(soap_loop_optim_fit) +
+  geom_raster(aes(x = row, y = col, fill = diff)) +
+  scale_fill_viridis_c(option = "turbo", limits = soap_loop_range) +
+  labs(x = NULL, y = NULL, fill = "Actual Growth") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
+
+# Combine and print
+loop_soap_both <- ggarrange(plot_loop_soap, 
+                            plot_loop_soap_data, 
+                            ncol = 1)
+loop_soap_both
+
+```
+
+### Data subset vectorized {#sec-soap-map}
+
+Next, we try to replicate this process by nesting everything within a dataset.
+
+```{r}
+#| label: prelim soap map
+
+# Clear memory space
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+# Add model fits to data frame
+soap_map_df <- so_test_df %>%
+  # Expand data to one row per patient and penalty constant
+  mutate(constants = list(so_constants %>% select(-visor))) %>%
+  unnest(constants) %>% 
+  # Estimate coefficients
+  mutate(coeffs = map2(constant_row, data,
+                       ~so_constants$visor[[.x]] %*% .y$diff)) %>% 
+  # Fitted values
+  mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
+  # Square residuals
+  mutate(ssr = map2_dbl(data, fit,
+                        ~ sum((.x$diff - .y)^2))) %>% 
+  # GCV Score
+  mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+
+# Extract best model by GCV
+soap_map_optim <- soap_map_df %>% 
+  arrange(fname, gcv, desc(sp_film), desc(sp_bound)) %>% 
+  group_by(fname) %>% 
+  slice(1) %>% 
+  ungroup()
+
+kbl(soap_map_optim %>% 
+      select(fname, fusion_type, sp_bound, sp_film, gcv), 
+    caption = "First Subset: Optimal Fit by Map/Mutate",
+    digits = 8) %>% 
+  kable_styling(full_width = F)
+
+# Extract data and fitted values for plotting
+soap_map_optim_fit <- soap_map_optim %>% 
+  select(fname, fusion_type, fit, data) %>% 
+  unnest(c(fit, data))
+
+# Keep predicted and actual plots consistent
+soap_map_range <- soap_map_optim_fit %$%
+  c(
+  min(c(min(diff), min(fit))),
+  max(c(max(diff), max(fit)))
+)
+
+# Plot model with lowest GCV for each patient
+plot_map_soap <- ggplot(soap_map_optim_fit) +
+  geom_raster(aes(x = row, y = col, fill = fit)) +
+  scale_fill_viridis_c(option = "turbo", limits = soap_map_range) +
+  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
+
+# Plot actual observations
+plot_map_soap_data <- ggplot(soap_map_optim_fit) +
+  geom_raster(aes(x = row, y = col, fill = diff)) +
+  scale_fill_viridis_c(option = "turbo", limits = soap_map_range) +
+  labs(x = NULL, y = NULL, fill = "Actual Growth") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fname, nrow = 1)
+
+# Combine and print
+map_soap_both <- ggarrange(plot_map_soap, 
+                           plot_map_soap_data, 
+                           ncol = 1)
+map_soap_both
+
+```
+
+### All Data Vectorized {#sec-soap-film-individual}
+
+```{r}
+#| label: individual soap models
+
+# Clear memory space
+rm(so_test_df)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+# Add model fits to data frame
+cranio_models %<>%
+  # Expand data to one row per patient and penalty constant
+  mutate(constants = list(so_constants %>% select(-visor))) %>%
+  unnest(constants)
+
+cranio_models %<>% 
+  # Estimate coefficients
+  mutate(coeffs = map2(constant_row, data,
+                       ~so_constants$visor[[.x]] %*% .y$diff)) %>% 
+  # Fitted values
+  mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
+  # Square residuals
+  mutate(ssr = map2_dbl(data, fit,
+                        ~ sum((.x$diff - .y)^2))) %>% 
+  # GCV Score
+  mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+
+```
+
+```{r}
+#| label: soap individuals data
+
+# Clear memory space
+rm(so_constants)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+cranio_model_optim <- cranio_models %>% 
+  arrange(fname, gcv, desc(sp_film), desc(sp_bound)) %>% 
+  group_by(fname) %>% 
+  slice(1) %>% 
+  ungroup()
+
+# Create output data set
+cranio_model_df <- cranio_model_optim %>% 
+  select(fname, coeffs) %>% 
+  mutate(coeffs = map(coeffs, as.vector)) %>% 
+  rename(beta_film = coeffs) %>% 
+  left_join(cranio_sub, by = "fname") %>% 
+  left_join(fusion_dict, by = "fusion_type") %>% 
+  select(everything(), beta_film)
+  unnest_wider(beta_film, names_sep = "_", simplify = T)
+
+write_csv(cranio_model_df, 
+          here::here("intermediate", "individual_interior_coeffs.csv"))
+
 ```
