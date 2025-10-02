@@ -99,6 +99,7 @@ DO_LOAD_MATRICES <- F
 DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
+DO_INDIV_SOAPS <- F
 
 # Set constants
 RM_IGNORE <- "DO|FN|IGNORE|FOLDER|cranio|_dict|so_"
@@ -110,11 +111,9 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Written regression equations now use FDA notation (@sec-prelim-models)
--   Patients above the age of 5 were removed (@sec-age-summary)
--   Preliminary fusion-specific GAM plots are wider and now include an outline to show area within the intracranial mask (@sec-prelim-gam)
--   A soap film smoother object was created based on the data (@sec-soap-film-grid)
--   Models were fit on individual patients using matrix multiplication: first with a loop on a subset (@sec-soap-film-loop), then using nested tibbles with a subset (@sec-soap-film-map), and finally on the entire data (@sec-soap-film-individual)
+-   Patients above the age of 3 were removed (@sec-age-summary)
+-   Models were fit on individual patients using matrix multiplication: first excluding the boundary cyclic spline with a loop on a subset (@sec-film-loop), then using nested tibbles with a subset (@sec-film-map), then including the boundary spline with a loop (@sec-soap-loop) and then nested tibbles (@sec-soap-map), and finally on the entire data (@sec-soap-film-individual)
+-   Preliminary tensor product GAM models were fit on normative patients (@sec-prelim-gam)
 
 ## Questions
 
@@ -143,6 +142,7 @@ here::i_am("2025.08_Malformation_Analysis.qmd")
 
 # Set data folder
 DATA_FOLDER <- here::here("../../data/Lukemire, Joshua's files - data/")
+COVARS_FOLDER <- here::here("../../data/SphericalMaps_database/SphericalMaps_database/")
 
 # Set subfolder with image data
 MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
@@ -217,7 +217,7 @@ fusion_df <- cranio %>%
 cranio %<>%
   left_join(fusion_df, by = "id_fmt") %>% 
   mutate(fusion_type = case_when(
-    num_fusions == 0 ~ "None",
+    num_fusions == 0 ~ "Normative",
     fusions == "Left Coronal/Right Coronal" ~ "Bicoronal",
     num_fusions > 1 ~ "Multiple",
     T ~ fusions
@@ -337,28 +337,6 @@ kbl(surg_summ, caption = "Images with Previous Surgery") %>%
   kable_styling(full_width = F)
 ```
 
-### Data Subset {#sec-subset-data}
-
-```{r}
-#| label: filtered data
-
-### Create subset data
-# Exclude rare fusion categories: multiple, lambdoid
-# Exclude sphenoidal involvement (in Craniosynostosis group without suture)
-# Exclude patients with previous surgery (10)
-# Only keep last picture taken
-cranio_sub <- cranio %>% 
-  filter(!fusion_type %in% c("Multiple", 
-                             "Left Lambdoid", "Right Lambdoid") &
-           sphenoidal_involvement %in% c(NA, 0) &
-           previous_surgery %in% c(NA, 0) &
-           visit_num == visits) %>% 
-  # Reduce number of columns
-  select(id_base, fname, fusion_type,
-         age, sex) %>% 
-  arrange(id_base, age)
-```
-
 ### Age Summary {#sec-age-summary}
 
 Fifth, we check the distribution of age in our data. We determine that over 98\% of the data falls under the age of 5 years, so we exclude those above this age, since we have very sparse observations to estimate an age effect.
@@ -367,7 +345,7 @@ Fifth, we check the distribution of age in our data. We determine that over 98\%
 #| label: age summary
 
 # Plot age densities
-age_plot <- ggplot(cranio_sub) +
+age_plot <- ggplot(cranio) +
   geom_density_ridges(aes(x = age, 
                           y =  fusion_type, fill = fusion_type)) +
   scale_fill_discrete(guide = "none") +
@@ -376,8 +354,8 @@ age_plot <- ggplot(cranio_sub) +
 age_plot
 
 # Summarize densities
-have_fusions <- cranio_sub %>% 
-  filter(fusion_type != "None")
+have_fusions <- cranio %>% 
+  filter(fusion_type != "Normative")
 
 have_fusions_quant <- have_fusions %$%
   quantile(age, probs = c(0.9, 0.95, 0.975, 0.99, 1)) %>% 
@@ -389,40 +367,13 @@ kbl(have_fusions_quant,
   kable_styling(full_width = F)
 
 # Set maximum age as 3 years old
-max_age <- 365 * 3
+cranio_max_age <- 365 * 3
 
 # Determine what percentile this corresponds to among patients with fusion
-max_age_summ <- tibble("Age Cap" = max_age, 
-                       "Percentile" = mean(have_fusions$age <= max_age))
+max_age_summ <- tibble("Age Cap" = cranio_max_age, 
+                       "Percentile" = mean(have_fusions$age <= cranio_max_age))
 
 kbl(max_age_summ, caption = "Age cap summary") %>% kable_styling(full_width = F)
-```
-
-```{r}
-#| label: subset by age
-
-### Exclude patients above this age cap
-cranio_sub %<>% filter(age <= max_age)
-```
-
-We generate a summary of the fusion types present in the remaining observations, to compare against the full data.
-
-```{r}
-#| label: summarize cleaned data
-
-# Summarize counts of images and patients by fusion type
-fusion_summ_sub <- cranio_sub %>% 
-  group_by(fusion_type) %>% 
-  summarize(pics = n(),
-            patients = n_distinct(id_base)) %>% 
-  ungroup() %>% 
-  arrange(desc(pics)) %>% 
-  mutate(pics_pct = pics / sum(pics),
-         patients_pct = patients / sum(patients)) %>% 
-  adorn_totals("row")
-
-kbl(fusion_summ_sub, caption = "Fusions in Subset Data") %>% 
-  kable_styling(full_width = F)
 ```
 
 # Pointwise Difference Matrix Data {#sec-load-matrices}
@@ -433,8 +384,7 @@ Next, we load the malformation maps into one data set. Each malformation map is 
 #| label: load matrix files
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE))))
-rm(cranio); gc(verbose = F)
+rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 # Define function to read each file
 load_matrix_data <- function(x){
@@ -456,32 +406,34 @@ load_matrix_data <- function(x){
 
 # Toggle whether to create matrix data
 if(DO_LOAD_MATRICES){
-# Create minimal matrix data
-cranio_matrix <- cranio_sub %>%
-  select(fname, age, sex, fusion_type) %>% 
-  rowwise() %>%
-  mutate(
-    raw_data = load_matrix_data(fname)
-  ) %>%
-  ungroup() %>% 
+  # Create minimal matrix data
+  cranio_matrix <- cranio %>%
+    select(fname, age, sex, fusion_type) %>% 
+    rowwise() %>%
+    mutate(
+      raw_data = load_matrix_data(fname)
+    ) %>%
+    ungroup()
+  
   # Rearrange so each row is a pixel
-  unnest(raw_data) %>%
-  group_by(row, col) %>%
-  nest() %>% 
-  ungroup()
-
-# Load regions and mask
-load(paste0(DATA_FOLDER, "region_labels_and_mask.RData"))
-
-cranio_matrix %<>%
-  left_join(region_labels,
-            by = c("row" = "X", "col" = "Y")) %>% 
-  filter(value != 0) %>% 
-  rename(region = value)
-
-saveRDS(cranio_matrix, 
-        file = here::here("intermediate", 
-                          "covars_and_matrices.rds"))
+  cranio_matrix %<>% 
+    unnest(raw_data) %>%
+    group_by(row, col) %>%
+    nest() %>% 
+    ungroup()
+  
+  # Load regions and mask
+  load(paste0(DATA_FOLDER, "region_labels_and_mask.RData"))
+  
+  cranio_matrix %<>%
+    left_join(region_labels,
+              by = c("row" = "X", "col" = "Y")) %>% 
+    filter(value != 0) %>% 
+    rename(region = value)
+  
+  saveRDS(cranio_matrix, 
+          file = here::here("intermediate", 
+                            "covars_and_matrices.rds"))
 } else{ 
   cranio_matrix <- readRDS(file = here::here("intermediate", 
                                              "covars_and_matrices.rds")) }
@@ -490,6 +442,105 @@ saveRDS(cranio_matrix,
 cranio_matrix %<>%
   mutate(row = -row, 
          col = -col)
+```
+
+```{r}
+#| label: check duplicate data
+
+# Find instances where average of all observations is the same
+dup_avgs <- cranio_matrix %>% 
+  unnest(data) %>% 
+  select(fname, fusion_type, age, row, col, diff) %>% 
+  group_by(fname, fusion_type, age) %>% 
+  nest() %>% 
+  mutate(diff_avg = map_dbl(data, ~mean(.$diff))) %>% 
+  select(-data) %>% 
+  group_by(diff_avg) %>% 
+  mutate(n = n()) %>% 
+  ungroup() %>% 
+  filter(n > 1)
+
+cranio_dup_fnames <- unique(dup_avgs$fname)
+
+# Reshape these to 1 per set of duplicates
+dups_collected <- dup_avgs %>% 
+  group_by(diff_avg, n) %>% 
+  summarize(fnames = paste(na.omit(unique(fname)), collapse = "/"),
+            fusions = paste(na.omit(unique(fusion_type)), collapse = "/"),
+            ages = paste(na.omit(unique(age)), collapse = "/")) %>% 
+  ungroup() %>% 
+  arrange(desc(n), diff_avg)
+
+# Add information about these duplicate pairs
+dups_collected %<>% 
+  # Check study
+  mutate(is_cnh = if_else(str_detect(fnames, "CNH"), 1, 0),
+         is_chco = if_else(str_detect(fnames, "CHCO"), 1, 0))
+
+dup_by_study <- dups_collected %>% 
+  group_by(is_cnh, is_chco) %>% 
+  summarize(n = n()) %>% 
+  ungroup()
+
+```
+
+### Data Subset {#sec-subset-data}
+
+```{r}
+#| label: filtered data
+
+### Create subset data
+# Exclude rare fusion categories: multiple, lambdoid
+# Exclude sphenoidal involvement (in Craniosynostosis group without suture)
+# Exclude patients with previous surgery (10)
+# Exclude patients above age cap of 3 yrs
+# Only keep last picture taken
+cranio_sub <- cranio %>% 
+  filter(!fusion_type %in% c("Multiple", 
+                             "Left Lambdoid", "Right Lambdoid") &
+           sphenoidal_involvement %in% c(NA, 0) &
+           previous_surgery %in% c(NA, 0) &
+           age <= cranio_max_age &
+           visit_num == visits) %>% 
+  # Reduce number of columns
+  select(id_base, fname, fusion_type,
+         age, sex) %>% 
+  arrange(id_base, age)
+
+# Clear space
+rm(cranio)
+```
+
+```{r}
+#| label: filter to subset
+
+# Filter pointwise data to same subset
+cranio_matrix <- cranio_matrix %>% 
+  unnest(data) %>% 
+  filter(fname %in% cranio_sub$fname) %>% 
+  group_by(row, col, region) %>% 
+  nest() %>% 
+  ungroup()
+```
+
+We generate a summary of the fusion types present in the remaining observations, to compare against the full data.
+
+```{r}
+#| label: summarize cleaned data
+
+# Summarize counts of images and patients by fusion type
+fusion_summ_sub <- cranio_sub %>% 
+  group_by(fusion_type) %>% 
+  summarize(pics = n(),
+            patients = n_distinct(id_base)) %>% 
+  ungroup() %>% 
+  arrange(desc(pics)) %>% 
+  mutate(pics_pct = pics / sum(pics),
+         patients_pct = patients / sum(patients)) %>% 
+  adorn_totals("row")
+
+kbl(fusion_summ_sub, caption = "Fusions in Subset Data") %>% 
+  kable_styling(full_width = F)
 ```
 
 ## Growth Matrix Visualizations {#sec-matrix-viz}
@@ -529,7 +580,6 @@ bound_viz <- ggplot() +
 
 bound_viz
 ```
-
 
 As a first visualization, we plot the regions by pixel.
 
@@ -614,7 +664,7 @@ We add to this summary by showing how these averages change on average over time
 # Define age category cutoffs
 # First, find quantiles of ages in craniosynostosis patients
 age_fused_quant <- cranio_sub %>% 
-  filter(fusion_type != "None") %$% 
+  filter(fusion_type != "Normative") %$% 
   quantile(age, prob = seq(0, 1, 0.2))
 
 # Next, use closest interpretable number of days
@@ -781,7 +831,7 @@ rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 # Add fusion variables for regression
 fusion_dict <- tibble(
-  fusion_type = c("None", 
+  fusion_type = c("Normative", 
                   "Sagittal", "Metopic", 
                   "Right Coronal", "Bicoronal", "Left Coronal"),
   fused_Sagittal = c(0, 1, 0, 0, 0, 0),
@@ -1138,8 +1188,6 @@ if(DO_PRELIM_MODEL_FUSION){
   # Run preliminary spatial models
   fusion_models <- cranio_matrix %>% 
     unnest(data) %>% 
-    # Leave out patients with no fusions, since this is a huge population
-    filter(!fusion_type %in% c("None")) %>% 
     # Split data by fusion type
     group_by(fusion_type) %>% 
     nest() %>% 
@@ -1190,17 +1238,20 @@ plot_model_fusion <- ggplot() +
   geom_raster(data = fusion_model_summ, 
               aes(x = row, y = col, fill = fit)) +
   geom_sf(data = cranio_bound_shape, fill = NA, linewidth = 1) +
-  facet_wrap(~fusion_type) +
+  facet_wrap(~fusion_type, nrow = 2) +
   scale_fill_viridis_c(option = "turbo") +
   scale_alpha(range = c(0.5, 1), guide = "none") +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
-  labs(title = "Fusion-Specific GAM",
-       fill = "Pred. Growth\n(1 y.o. F)") +
+  labs(fill = "Pred. Growth\n(1 y.o. F)") +
   theme(legend.position = "bottom")
 
 plot_model_fusion
+
+ggsave(here::here("Presentation Images", "tensor_smooth_fusion.png"),
+       plot_model_fusion,
+       height = 4, width = 8, units = "in")
 
 # Add row and column to age smooth new-data (to be cancelled out)
 newdata_age_gam <- newdata_cranio_age %>% 
@@ -1308,7 +1359,11 @@ save(matrix_generic, file = here::here("intermediate", "matrix_indices.rda"))
 
 # Construct soap film smoother object
 cranio_soap <- smoothCon(
-  s(row, col, bs = "so", xt = list(bnd = bound_list)),
+  s(
+    row, col, bs = "so", 
+    xt = list(
+      bnd = bound_list)
+  ),
   data = matrix_generic, knots = grid_k
 )
 
@@ -1401,26 +1456,13 @@ cranio_models <- cranio_matrix %>%
 
 # Test with small subset of data
 so_test_df <- cranio_models %>% 
+  filter(!fname %in% cranio_dup_fnames) %>% 
   group_by(fusion_type) %>% 
   slice(1) %>% 
   ungroup()
 
 # Remove old objects
 rm(cranio_matrix, newdata_cranio_age); gc()
-```
-
-```{r}
-#| label: check duplicate data
-
-# Find instances where average of all observations is the same
-dup_avgs <- cranio_models %>% 
-  mutate(diff_avg = map_dbl(data, ~mean(.$diff))) %>% 
-  select(-data) %>% 
-  group_by(diff_avg) %>% 
-  mutate(n = n()) %>% 
-  ungroup() %>% 
-  filter(n > 1) %>% 
-  arrange(desc(n), diff_avg)
 ```
 
 ## Model Fitting without Boundary
@@ -1628,21 +1670,24 @@ rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 soap_loop_df <- NULL
 
 for(i in 1:nrow(so_test_df)){
+  
+  # Data to fit model on
+  d <- so_test_df$data[[i]]
+  
+  # File name to identify output
+  f <- so_test_df$fname[i]
+  
+  # Outcome vector
+  soap_y <- d$diff
+  
+  df_i <- NULL
+  
   for(j in 1:nrow(so_constants)){
-    
-    # Data to fit model on
-    d <- so_test_df$data[[i]]
-    
-    # File name to identify output
-    f <- so_test_df$fname[i]
     
     # Matrix helpful for influence and coefficients
     reg_mx <- so_constants$visor[[j]]
     
     trace_H <- so_constants$hat_trace[j]
-    
-    # Outcome vector
-    soap_y <- d$diff
     
     # Coefficient estimates
     soap_b <- reg_mx %*% soap_y
@@ -1654,20 +1699,40 @@ for(i in 1:nrow(so_test_df)){
     # GCV score
     soap_gcv <- (so_n * sum(soap_sqresid)) / (so_n - trace_H)^2
     
-    out_dl <- tibble_row(
-      "fname" = f,
+    # Add to image dataset
+    df_row_j <- tibble_row(
       "sp_bound" = so_constants$sp_bound[[j]],
       "sp_film" = so_constants$sp_film[[j]],
       "beta" = list(soap_b), 
       "fit" = list(soap_fit), 
       "gcv" = soap_gcv)
     
-    soap_loop_df %<>% bind_rows(out_dl)
-  }}
+    df_i %<>% bind_rows(df_row_j)
+  }
+  
+  # Keep all GCV values
+  df_i_gcv <- df_i %>% 
+    select(-c(beta, fit)) %>% 
+    rename_with(.cols = everything(), ~paste0(., "_all"))
+  
+  # Sort so best GCV / most smooth is on top
+  df_i %<>% 
+    arrange(gcv, desc(sp_film), desc(sp_bound))
+  
+  # Extract best model; add all gcv scores
+  out_df <- df_i %>% 
+    slice(1) %>% 
+    mutate("fname" = f, .before = everything()) %>% 
+    mutate(all_gcv = list(df_i_gcv))
+  
+  # Append to final data
+  soap_loop_df %<>% bind_rows(out_df)
+}
 
 # Plot GCV from test models
-soap_loop_gcv_plot <- ggplot(soap_loop_df) +
-  geom_raster(aes(x = sp_bound, y = sp_film, fill = gcv)) +
+soap_loop_gcv_plot <- ggplot(soap_loop_df %>% 
+                               unnest(all_gcv)) +
+  geom_raster(aes(x = sp_bound_all, y = sp_film_all, fill = gcv_all)) +
   facet_wrap(~fname, scales = "free_y") +
   scale_x_continuous(transform = "log10") +
   scale_y_continuous(transform = "log10") +
@@ -1676,14 +1741,9 @@ soap_loop_gcv_plot <- ggplot(soap_loop_df) +
 soap_loop_gcv_plot
 
 # Take model with lowest GCV for each patient
-soap_loop_optim <- soap_loop_df %>% 
-  arrange(fname, gcv, desc(sp_film), desc(sp_bound)) %>% 
-  group_by(fname) %>% 
-  slice(1) %>% 
-  ungroup() %>% 
-  left_join(so_test_df, by = "fname")
+soap_loop_df %<>% left_join(so_test_df, by = "fname")
 
-kbl(soap_loop_optim %>% 
+kbl(soap_loop_df %>% 
       select(fname, fusion_type, sp_bound, sp_film, gcv), 
     caption = "First Subset: Optimal Fit for each Patient",
     scientific = TRUE,
@@ -1691,19 +1751,19 @@ kbl(soap_loop_optim %>%
   kable_styling(full_width = F)
 
 # Extract data and fitted values for plotting
-soap_loop_optim_fit <- soap_loop_optim %>% 
+soap_loop_fit <- soap_loop_df %>% 
   select(fname, fusion_type, fit, data) %>% 
   unnest(c(fit, data))
 
 # Keep predicted and actual plots consistent
-soap_loop_range <- soap_loop_optim_fit %$%
+soap_loop_range <- soap_loop_fit %$%
   c(
   min(c(min(diff), min(fit))),
   max(c(max(diff), max(fit)))
 )
 
 # Plot model with lowest GCV for each patient
-plot_loop_soap <- ggplot(soap_loop_optim_fit) +
+plot_loop_soap <- ggplot(soap_loop_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
   scale_fill_viridis_c(option = "turbo", limits = soap_loop_range) +
   labs(x = NULL, y = NULL, fill = "Pred. Growth") +
@@ -1713,7 +1773,7 @@ plot_loop_soap <- ggplot(soap_loop_optim_fit) +
   facet_wrap(~fname, nrow = 1)
 
 # Plot actual observations
-plot_loop_soap_data <- ggplot(soap_loop_optim_fit) +
+plot_loop_soap_data <- ggplot(soap_loop_fit) +
   geom_raster(aes(x = row, y = col, fill = diff)) +
   scale_fill_viridis_c(option = "turbo", limits = soap_loop_range) +
   labs(x = NULL, y = NULL, fill = "Actual Growth") +
@@ -1732,7 +1792,7 @@ loop_soap_both
 
 ### Data subset vectorized {#sec-soap-map}
 
-Next, we try to replicate this process by nesting everything within a dataset.
+Next, we replicate this process by nesting everything within a dataset.
 
 ```{r}
 #| label: prelim soap map
@@ -1742,47 +1802,69 @@ rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 # Add model fits to data frame
 soap_map_df <- so_test_df %>%
-  # Expand data to one row per patient and penalty constant
-  mutate(constants = list(so_constants %>% select(-visor))) %>%
-  unnest(constants) %>% 
-  # Estimate coefficients
-  mutate(coeffs = map2(constant_row, data,
-                       ~so_constants$visor[[.x]] %*% .y$diff)) %>% 
-  # Fitted values
-  mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
-  # Square residuals
-  mutate(ssr = map2_dbl(data, fit,
-                        ~ sum((.x$diff - .y)^2))) %>% 
-  # GCV Score
-  mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+  # Map over every image
+  mutate(
+    model = map(
+      data,
+      function(d){
+        
+        # Fit estimates for every combination of penalty constants
+        fits <- so_constants %>% 
+          select(-visor) %>% 
+          # Estimate coefficients
+          mutate(coeffs = map(constant_row,
+                              ~so_constants$visor[[.x]] %*% d$diff)) %>% 
+          # Fitted values
+          mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
+          # Sum of square residuals
+          mutate(ssr = map_dbl(fit, ~sum((d$diff - .x)^2))) %>% 
+          # GCV Score
+          mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+        
+        # Keep the GCV scores for all combinations of constants
+        fits_gcv <- fits %>% 
+          select(sp_bound, sp_film, gcv) %>% 
+          rename_with(.cols = everything(), ~paste0(.x, "_all"))
+        
+        # Keep the optimal model (lowest GCV -> smoothes interior -> smoothest boundary)
+        image_model <- fits %>%
+          arrange(gcv, desc(sp_film), desc(sp_bound)) %>% 
+          slice(1) %>% 
+          select(-c(hat_trace, constant_row)) %>% 
+          # Append all GCV scores
+          mutate(all_scores = list(fits_gcv)) %>% 
+          tibble_row()
+        
+        return(image_model)
+      }
+    )
+  )
 
-# Extract best model by GCV
-soap_map_optim <- soap_map_df %>% 
-  arrange(fname, gcv, desc(sp_film), desc(sp_bound)) %>% 
-  group_by(fname) %>% 
-  slice(1) %>% 
-  ungroup()
+# Extract all model components
+soap_map_df %<>% 
+  unnest_wider(model) %>% 
+  unnest(c(coeffs, fit))
 
-kbl(soap_map_optim %>% 
+kbl(soap_map_df %>% 
       select(fname, fusion_type, sp_bound, sp_film, gcv), 
     caption = "First Subset: Optimal Fit by Map/Mutate",
     digits = 8) %>% 
   kable_styling(full_width = F)
 
 # Extract data and fitted values for plotting
-soap_map_optim_fit <- soap_map_optim %>% 
+soap_map_fit <- soap_map_df %>% 
   select(fname, fusion_type, fit, data) %>% 
   unnest(c(fit, data))
 
 # Keep predicted and actual plots consistent
-soap_map_range <- soap_map_optim_fit %$%
+soap_map_range <- soap_map_fit %$%
   c(
   min(c(min(diff), min(fit))),
   max(c(max(diff), max(fit)))
 )
 
 # Plot model with lowest GCV for each patient
-plot_map_soap <- ggplot(soap_map_optim_fit) +
+plot_map_soap <- ggplot(soap_map_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
   scale_fill_viridis_c(option = "turbo", limits = soap_map_range) +
   labs(x = NULL, y = NULL, fill = "Pred. Growth") +
@@ -1792,7 +1874,7 @@ plot_map_soap <- ggplot(soap_map_optim_fit) +
   facet_wrap(~fname, nrow = 1)
 
 # Plot actual observations
-plot_map_soap_data <- ggplot(soap_map_optim_fit) +
+plot_map_soap_data <- ggplot(soap_map_fit) +
   geom_raster(aes(x = row, y = col, fill = diff)) +
   scale_fill_viridis_c(option = "turbo", limits = soap_map_range) +
   labs(x = NULL, y = NULL, fill = "Actual Growth") +
@@ -1818,23 +1900,55 @@ map_soap_both
 rm(so_test_df)
 rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
-# Add model fits to data frame
-cranio_models %<>%
-  # Expand data to one row per patient and penalty constant
-  mutate(constants = list(so_constants %>% select(-visor))) %>%
-  unnest(constants)
+if(DO_INDIV_SOAPS){
 
-cranio_models %<>% 
-  # Estimate coefficients
-  mutate(coeffs = map2(constant_row, data,
-                       ~so_constants$visor[[.x]] %*% .y$diff)) %>% 
-  # Fitted values
-  mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
-  # Square residuals
-  mutate(ssr = map2_dbl(data, fit,
-                        ~ sum((.x$diff - .y)^2))) %>% 
-  # GCV Score
-  mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+# Add to existing models data set
+cranio_models %<>%
+# Map over every image
+  mutate(
+    model = map(
+      data,
+      function(d){
+        
+        # Fit estimates for every combination of penalty constants
+        fits <- so_constants %>% 
+          select(-visor) %>% 
+          # Estimate coefficients
+          mutate(coeffs = map(constant_row,
+                              ~so_constants$visor[[.x]] %*% d$diff)) %>% 
+          # Fitted values
+          mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
+          # Sum of square residuals
+          mutate(ssr = map_dbl(fit, ~sum((d$diff - .x)^2))) %>% 
+          # GCV Score
+          mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+        
+        # Keep the GCV scores for all combinations of constants
+        fits_gcv <- fits %>% 
+          select(sp_bound, sp_film, gcv) %>% 
+          rename_with(.cols = everything(), ~paste0(.x, "_all"))
+        
+        # Keep the optimal model (lowest GCV -> smoothes interior -> smoothest boundary)
+        image_model <- fits %>%
+          arrange(gcv, desc(sp_film), desc(sp_bound)) %>% 
+          slice(1) %>% 
+          select(-c(hat_trace, constant_row)) %>% 
+          # Append all GCV scores
+          mutate(all_scores = list(fits_gcv)) %>% 
+          tibble_row()
+        
+        return(image_model)
+      }
+    )
+  )
+  
+  saveRDS(cranio_models, 
+          file = here::here("intermediate", "individual_soap_film_df.rds"))
+  
+} else {
+  cranio_models <- readRDS(
+    file = here::here("intermediate", "individual_soap_film_df.rds"))
+}
 
 ```
 
@@ -1845,23 +1959,140 @@ cranio_models %<>%
 rm(so_constants)
 rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
-cranio_model_optim <- cranio_models %>% 
-  arrange(fname, gcv, desc(sp_film), desc(sp_bound)) %>% 
-  group_by(fname) %>% 
-  slice(1) %>% 
-  ungroup()
+# Extract all model components
+cranio_models %<>% 
+  unnest_wider(model) %>% 
+  unnest(c(coeffs, fit))
 
-# Create output data set
-cranio_model_df <- cranio_model_optim %>% 
+# Extract coefficient estimates
+cranio_models_beta <- cranio_models %>% 
   select(fname, coeffs) %>% 
   mutate(coeffs = map(coeffs, as.vector)) %>% 
-  rename(beta_film = coeffs) %>% 
+  rename(beta = coeffs) %>% 
   left_join(cranio_sub, by = "fname") %>% 
   left_join(fusion_dict, by = "fusion_type") %>% 
-  select(everything(), beta_film)
-  unnest_wider(beta_film, names_sep = "_", simplify = T)
+  select(-beta, everything(), beta) %>% 
+  unnest_wider(beta, names_sep = "_", simplify = T)
 
-write_csv(cranio_model_df, 
-          here::here("intermediate", "individual_interior_coeffs.csv"))
+# Save coefficients as csv
+write_csv(cranio_models_beta, 
+          here::here("intermediate", "individual_soap_coeffs.csv"))
 
+# Save estimator requirements as RData
+save(cranio_models_beta, so_X,
+     file = here::here("intermediate", "individual_soap_film_fits.rda"))
 ```
+
+# Bayesian Soap Film
+
+## Fit on individual model
+
+```{r}
+#| label: bayesian regression function
+
+### Write Gibbs sampler for Bayesian linear regression
+Gibbs.Pen.Lin.Reg <- function(
+    y, X, S, 
+    beta0, sigmasq0, lambda0, 
+    a_pri, b_pri, c_pri, d_pri,
+    iters = 1e4, burn_pct = 0.1
+){
+  ### Calculate dimensions
+  
+  # Design matrix
+  P <- ncol(X)
+  N <- nrow(X)
+  
+  stopifnot(nrow(y) == N)
+  
+  # iterations of burn-in
+  iters_burn <- ceiling(iters * burn_pct)
+  
+  ### Initialize hyperparameters
+  
+  # Assign initial values
+  beta <- beta0
+  sigmasq <- sigmasq0
+  lambda <- lambda0
+  
+  # Compute hyperparameters that don't update
+  a_post <- N/2 + P/2 + a_pri
+  c_post <- P/2 + c_pri
+  
+  ### Create objects to save output
+  beta_out <- array(0, dim = c(iters - iters_burn, P))
+  sigmasq_out <- array(0, dim = c(iters - iters_burn, 1))
+  lambda_out <- array(0, dim = c(iters - iters_burn, 1))
+  
+  ### Run MCMC loop
+  
+  for(j in 1:iters){
+    
+    # Output on checkpoints
+    if(j %% iters_burn == 0) print(paste("at turn", j))
+    
+    ## (1) Update beta (coefficients)
+    
+    # Matrix needed for both moments
+    beta_helper <- solve( t(X) %*% X + lambda * S )
+    
+    # Posterior conditional expectation
+    beta_ex <- beta_helper %*% t(X) %*% y
+    
+    # Posterior conditional variance
+    beta_var <- beta_helper * sigmasq
+    
+    # Generate new beta sample
+    beta <- rmvnorm(n = 1, beta_ex, beta_var) %>% t()
+    
+    ## (2) Update sigma^2 (residual variance)
+    
+    # 2nd parameter of inverse gamma
+    
+    b_post <- 0.5 * 
+      t((y - X %*% beta)) %*% (y - X %*% beta) + 
+      (lambda / 2) * t(beta) %*% S %*% beta + b_pri
+    
+    # Generate new sigma squared sample
+    precision <- rgamma(1, a_post, b_post)
+    sigmasq <- 1 / precision
+    
+    ## (3) Update lambda (beta function smoothness factor)
+    
+    d_post <- (1 / (2 * sigmasq)) * t(beta) %*% S %*% beta + d_pri
+    
+    lambda <- rgamma(1, c_post, d_post)
+    
+    ## Save results
+    t <- j - iters_burn
+    
+    if(t > 0){
+      beta_out[t,] <- beta
+      sigmasq_out[t,] <- sigmasq
+      gammasq_out[t,] <- gammasq
+    }
+  }
+  
+  return(list("beta" = beta_out,
+              "sigma_sq" = sigmasq_out,
+              "lambda" = lambda_out))
+}
+```
+
+```{r}
+#| label: bayes soap film sample
+
+# Set outcome
+y_mx <- as.matrix(cranio_models$data[[1]]$diff)
+
+S_mx <- Reduce("+", cranio_soap$S)
+
+# Run Gibbs sampler
+so_bayes_1 <- Gibbs.Pen.Lin.Reg(
+  y = y_mt, X = so_X, S = S_mx,
+  beta0 = rep(1, 3), sigmasq0 = 1, gammasq0 = 1, 
+  a_pri = 1, b_pri = 1, c_pri = 1, d_pri = 1,
+  iters = 1e4, burn_pct = 0.1
+)
+```
+
