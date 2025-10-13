@@ -43,6 +43,9 @@ pacman::p_load(
   # Specialty
   itsadug, spdep, concaveman,
   
+  # Bayes
+  mvtnorm,
+  
   # Format
   latex2exp, table1, gtsummary,
   broom.helpers, broom.mixed, progressr, cli,
@@ -111,9 +114,8 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Patients above the age of 3 were removed (@sec-age-summary)
--   Models were fit on individual patients using matrix multiplication: first excluding the boundary cyclic spline with a loop on a subset (@sec-film-loop), then using nested tibbles with a subset (@sec-film-map), then including the boundary spline with a loop (@sec-soap-loop) and then nested tibbles (@sec-soap-map), and finally on the entire data (@sec-soap-film-individual)
--   Preliminary tensor product GAM models were fit on normative patients (@sec-prelim-gam)
+-   Bayesian soap film smoother was fit on one individual patient (@sec-bayes-individual)
+-   Assumptions for Bayesian model were written out (@sec-bayes-soap)
 
 ## Questions
 
@@ -1373,11 +1375,11 @@ cranio_soap <- cranio_soap[[1]]
 
 ### Smoother Model Components {#sec-soap-film-components}
 
-From this smoother object, we extract the relevant matrices that will allow us to fit the model: the design matrix $X$ and the penalty matrices for to the boundary and interior splines ($S_1$ and $S_2$ respectively). The smoother object stored the penalty matrices as size $n \times n$, even though $n = k_1 + k_2$, where $k_1$ is the dimension of the boundary spline and $k_2$ is the dimension of the interior film spline. Therefore, we extract each individual matrix excluding the block 0 matrices.
+From this smoother object, we extract the relevant matrices that will allow us to fit the model: the $n \times K$ design matrix $X$ and the penalty matrices for the boundary and interior splines ($\mathbf{S}^{(1)}$ and $\mathbf{S}^{(2)}$ respectively). In `mgcv`, The smoother object stores each penalty matrix as size $K \times K$. So we can denote , even though $K = k_1 + k_2$, where $k_1$ is the dimension of the boundary spline and $k_2$ is the dimension of the interior film spline. To see the effect of each of these penalty matrices, we extract each individual matrix excluding the block 0 matrices.
 
 We estimate the coefficients for this model using the closed-form expression
 $$
-\hat{\boldsymbol{\beta}} = (\mathbf{X}^\top \mathbf{X} + \lambda \mathbf{S})^{-1}\mathbf{X}^\top \mathbf{y}
+\hat{\boldsymbol{\beta}} = (\mathbf{X}^\top \mathbf{X} + \boldsymbol{\lambda} \mathbf{S^*})^{-1}\mathbf{X}^\top \mathbf{y}
 $$
 
 We currently run a grid search to find the optimal smoothing penalty constant $\lambda$ (called "sp" in mgcv). We use the range $10^{-9}, ..., 10^{-2}$. We then select the model that achieves the minimum generalized cross-validation ("GCV") score:
@@ -1461,6 +1463,16 @@ so_test_df <- cranio_models %>%
   slice(1) %>% 
   ungroup()
 
+# Identify range of outcome values for consistent plotting
+so_diff_range <- c(
+  0,
+  cranio_models %>% 
+    select(data) %>% 
+    mutate(max_diff = map_dbl(data, ~max(.$diff))) %>% 
+    summarize(max_d = quantile(max_diff, 0.999)) %>% 
+    pull(max_d)
+)
+
 # Remove old objects
 rm(cranio_matrix, newdata_cranio_age); gc()
 ```
@@ -1514,10 +1526,15 @@ for(i in 1:nrow(so_test_df)){
     film_loop_df %<>% bind_rows(out_dl)
   }}
 
+# Add fusion type to this output
+film_loop_df %<>% 
+  left_join(so_test_df %>% select(-data))
+  
+
 # Plot GCV from test models
 film_loop_gcv_plot <- ggplot(film_loop_df) +
   geom_line(aes(x = sp, y = gcv)) +
-  facet_wrap(~fname, scales = "free_y") +
+  facet_wrap(~fusion_type, scales = "free_y") +
   scale_x_continuous(transform = "log10")
 
 film_loop_gcv_plot
@@ -1528,7 +1545,7 @@ film_loop_optim <- film_loop_df %>%
   group_by(fname) %>% 
   slice(1) %>% 
   ungroup() %>% 
-  left_join(so_test_df, by = "fname")
+  left_join(so_test_df, by = c("fname", "fusion_type"))
 
 kbl(film_loop_optim %>% 
       select(fname, fusion_type, sp, gcv), 
@@ -1540,36 +1557,31 @@ film_loop_optim_fit <- film_loop_optim %>%
   select(fname, fusion_type, fit, data) %>% 
   unnest(c(fit, data))
 
-# Keep predicted and actual plots consistent
-film_loop_range <- film_loop_optim_fit %$%
-  c(
-    min(c(min(diff), min(fit))),
-    max(c(max(diff), max(fit)))
-  )
-
 # Plot model with lowest GCV for each patient
 plot_loop_film <- ggplot(film_loop_optim_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = film_loop_range) +
-  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  labs(x = NULL, y = NULL, fill = "Pred. Growth",
+       title = "Interior using Loop") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
+  facet_wrap(~fusion_type, nrow = 1)
 
 # Plot actual observations
-plot_loop_film_data <- ggplot(film_loop_optim_fit) +
+plot_so_test_data <- ggplot(so_test_df %>% unnest(data)) +
   geom_raster(aes(x = row, y = col, fill = diff)) +
-  scale_fill_viridis_c(option = "turbo", limits = film_loop_range) +
-  labs(x = NULL, y = NULL, fill = "Actual Growth") +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  labs(x = NULL, y = NULL, fill = "Growth",
+       title = "True Data") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
+  facet_wrap(~fusion_type, nrow = 1)
 
 # Combine and print
 loop_film_both <- ggarrange(plot_loop_film, 
-                            plot_loop_film_data, 
+                            plot_so_test_data, 
                             ncol = 1)
 loop_film_both
 
@@ -1618,36 +1630,21 @@ film_map_optim_fit <- film_map_optim %>%
   select(fname, fusion_type, fit, data) %>% 
   unnest(c(fit, data))
 
-# Keep predicted and actual plots consistent
-film_map_range <- film_map_optim_fit %$%
-  c(
-  min(c(min(diff), min(fit))),
-  max(c(max(diff), max(fit)))
-)
-
 # Plot model with lowest GCV for each patient
-plot_map_film <- ggplot(film_map_optim_fit) +
+plot_so_map_nobound <- ggplot(film_map_optim_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = film_map_range) +
-  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  labs(x = NULL, y = NULL, 
+       fill = "Pred. Growth exc. Bound.",
+       title = "Predictions: Interior Only") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
-
-# Plot actual observations
-plot_map_film_data <- ggplot(film_map_optim_fit) +
-  geom_raster(aes(x = row, y = col, fill = diff)) +
-  scale_fill_viridis_c(option = "turbo", limits = film_map_range) +
-  labs(x = NULL, y = NULL, fill = "Actual Growth") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
+  facet_wrap(~fusion_type, nrow = 1)
 
 # Combine and print
-map_film_both <- ggarrange(plot_map_film, 
-                           plot_map_film_data, 
+map_film_both <- ggarrange(plot_so_map_nobound, 
+                           plot_so_test_data, 
                            ncol = 1)
 map_film_both
 
@@ -1729,20 +1726,21 @@ for(i in 1:nrow(so_test_df)){
   soap_loop_df %<>% bind_rows(out_df)
 }
 
+# Add patient info to output
+soap_loop_df %<>% left_join(so_test_df, by = c("fname"))
+
 # Plot GCV from test models
 soap_loop_gcv_plot <- ggplot(soap_loop_df %>% 
                                unnest(all_gcv)) +
   geom_raster(aes(x = sp_bound_all, y = sp_film_all, fill = gcv_all)) +
-  facet_wrap(~fname, scales = "free_y") +
+  facet_wrap(~fusion_type, scales = "free_y") +
   scale_x_continuous(transform = "log10") +
   scale_y_continuous(transform = "log10") +
   scale_fill_continuous(transform = "log")
 
 soap_loop_gcv_plot
 
-# Take model with lowest GCV for each patient
-soap_loop_df %<>% left_join(so_test_df, by = "fname")
-
+# Print model with lowest GCV
 kbl(soap_loop_df %>% 
       select(fname, fusion_type, sp_bound, sp_film, gcv), 
     caption = "First Subset: Optimal Fit for each Patient",
@@ -1755,36 +1753,21 @@ soap_loop_fit <- soap_loop_df %>%
   select(fname, fusion_type, fit, data) %>% 
   unnest(c(fit, data))
 
-# Keep predicted and actual plots consistent
-soap_loop_range <- soap_loop_fit %$%
-  c(
-  min(c(min(diff), min(fit))),
-  max(c(max(diff), max(fit)))
-)
-
 # Plot model with lowest GCV for each patient
 plot_loop_soap <- ggplot(soap_loop_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = soap_loop_range) +
-  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  labs(x = NULL, y = NULL, 
+       fill = "Pred. Growth",
+       title = "Predictions Using Loop") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
-
-# Plot actual observations
-plot_loop_soap_data <- ggplot(soap_loop_fit) +
-  geom_raster(aes(x = row, y = col, fill = diff)) +
-  scale_fill_viridis_c(option = "turbo", limits = soap_loop_range) +
-  labs(x = NULL, y = NULL, fill = "Actual Growth") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
+  facet_wrap(~fusion_type, nrow = 1)
 
 # Combine and print
 loop_soap_both <- ggarrange(plot_loop_soap, 
-                            plot_loop_soap_data, 
+                            plot_so_test_data, 
                             ncol = 1)
 loop_soap_both
 
@@ -1799,6 +1782,9 @@ Next, we replicate this process by nesting everything within a dataset.
 
 # Clear memory space
 rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+
+bound_cols <- which(apply(cranio_soap$S[[1]], 2, sum) != 0)
+film_cols <- which(apply(cranio_soap$S[[2]], 2, sum) != 0)
 
 # Add model fits to data frame
 soap_map_df <- so_test_df %>%
@@ -1815,7 +1801,10 @@ soap_map_df <- so_test_df %>%
           mutate(coeffs = map(constant_row,
                               ~so_constants$visor[[.x]] %*% d$diff)) %>% 
           # Fitted values
-          mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
+          mutate(fit = map(coeffs, ~ so_X %*% .x),
+                 fit_bound = map(coeffs, 
+                                 ~ so_X[, bound_cols] %*% .x[bound_cols]),
+                 fit_int = map(coeffs, ~ so_X[, film_cols] %*% .x[film_cols])) %>% 
           # Sum of square residuals
           mutate(ssr = map_dbl(fit, ~sum((d$diff - .x)^2))) %>% 
           # GCV Score
@@ -1843,7 +1832,7 @@ soap_map_df <- so_test_df %>%
 # Extract all model components
 soap_map_df %<>% 
   unnest_wider(model) %>% 
-  unnest(c(coeffs, fit))
+  unnest(c(coeffs, fit, fit_bound, fit_int))
 
 kbl(soap_map_df %>% 
       select(fname, fusion_type, sp_bound, sp_film, gcv), 
@@ -1852,43 +1841,51 @@ kbl(soap_map_df %>%
   kable_styling(full_width = F)
 
 # Extract data and fitted values for plotting
-soap_map_fit <- soap_map_df %>% 
-  select(fname, fusion_type, fit, data) %>% 
-  unnest(c(fit, data))
-
-# Keep predicted and actual plots consistent
-soap_map_range <- soap_map_fit %$%
-  c(
-  min(c(min(diff), min(fit))),
-  max(c(max(diff), max(fit)))
-)
+so_test_fit <- soap_map_df %>% 
+  select(fname, fusion_type, fit, fit_bound, fit_int, data) %>% 
+  unnest(c(fit, fit_bound, fit_int, data))
 
 # Plot model with lowest GCV for each patient
-plot_map_soap <- ggplot(soap_map_fit) +
+plot_map_soap <- ggplot(so_test_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = soap_map_range) +
-  labs(x = NULL, y = NULL, fill = "Pred. Growth") +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  labs(x = NULL, y = NULL, 
+       fill = "Pred. Growth",
+       title = "Sample Predictions") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
-
-# Plot actual observations
-plot_map_soap_data <- ggplot(soap_map_fit) +
-  geom_raster(aes(x = row, y = col, fill = diff)) +
-  scale_fill_viridis_c(option = "turbo", limits = soap_map_range) +
-  labs(x = NULL, y = NULL, fill = "Actual Growth") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fname, nrow = 1)
+  facet_wrap(~fusion_type, nrow = 1)
 
 # Combine and print
 map_soap_both <- ggarrange(plot_map_soap, 
-                           plot_map_soap_data, 
+                           plot_so_test_data, 
                            ncol = 1)
 map_soap_both
 
+# Plot only boundary spline from model with lowest GCV for each patient
+plot_map_soap_bound <- ggplot(so_test_fit) +
+  geom_raster(aes(x = row, y = col, fill = fit_bound)) +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  labs(x = NULL, y = NULL, fill = "Pred. Growth", 
+       title = "Predictions: Boundary Only") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~fusion_type, nrow = 1)
+
+plot_map_soap_bound
+
+# Compare predictions from interior, boundary, both, and truth
+map_soap_build <- ggarrange(
+  plot_so_map_nobound,
+  plot_map_soap_bound,
+  plot_map_soap,
+  plot_so_test_data,
+  ncol = 1, legend = "none"
+  )
+
+map_soap_build
 ```
 
 ### All Data Vectorized {#sec-soap-film-individual}
@@ -1983,64 +1980,95 @@ save(cranio_models_beta, so_X,
      file = here::here("intermediate", "individual_soap_film_fits.rda"))
 ```
 
-# Bayesian Soap Film
+# Bayesian Soap Film (#sec-bayes-soap)
 
-## Fit on individual model
+We assume the priors:
 
 ```{r}
 #| label: bayesian regression function
 
 ### Write Gibbs sampler for Bayesian linear regression
-Gibbs.Pen.Lin.Reg <- function(
-    y, X, S, 
-    beta0, sigmasq0, lambda0, 
-    a_pri, b_pri, c_pri, d_pri,
-    iters = 1e4, burn_pct = 0.1
+Gibbs.Pen.Lin.Reg_FN <- function(
+    # Note: uses one distribution for all lambdas
+    y, X, # Data
+    S, # Penalty matrices
+    sigmasq0, lambda0, # Default parameters
+    a_pri, b_pri, c_pri, d_pri, # Prior hyperparameters
+    iters = 1e4, burn_pct = 0.1 # MCMC parameters
 ){
+  
+  ### Reformat penalty matrix
+  if(is.matrix(S)){ S <- list(S) }
+  
   ### Calculate dimensions
   
-  # Design matrix
-  P <- ncol(X)
+  ## Design matrix
+  K <- ncol(X)
   N <- nrow(X)
   
   stopifnot(nrow(y) == N)
   
-  # iterations of burn-in
+  ## Iterations of burn-in
   iters_burn <- ceiling(iters * burn_pct)
+  
+  ## Penalty dimensions
+  
+  # number of penalties
+  pen_J <- length(S)  
+
+  # non-zero columns in each penalty matrix
+  cols_J <- map(S, ~which(apply(., 2, sum) != 0))
+  
+  # number of parameters for each penalty
+  k_J <- map_dbl(cols_J, length)
+  
+  stopifnot(sum(k_J) == K)
   
   ### Initialize hyperparameters
   
   # Assign initial values
-  beta <- beta0
   sigmasq <- sigmasq0
-  lambda <- lambda0
+  lambda <- rep(lambda0, pen_J)
   
   # Compute hyperparameters that don't update
-  a_post <- N/2 + P/2 + a_pri
-  c_post <- P/2 + c_pri
+  a_post <- N/2 + K/2 + a_pri
+  c_post <- k_J/2 + c_pri
   
   ### Create objects to save output
-  beta_out <- array(0, dim = c(iters - iters_burn, P))
+  
+  # Posterior samples
+  beta_out <- array(0, dim = c(iters - iters_burn, K))
   sigmasq_out <- array(0, dim = c(iters - iters_burn, 1))
-  lambda_out <- array(0, dim = c(iters - iters_burn, 1))
+  lambda_out <- array(0, dim = c(iters - iters_burn, pen_J))
+  
+  # Burn-in period
+  beta_burn <- array(0, dim = c(iters_burn, K))
+  sigmasq_burn <- array(0, dim = c(iters_burn, 1))
+  lambda_burn <- array(0, dim = c(iters_burn, pen_J))
   
   ### Run MCMC loop
   
   for(j in 1:iters){
     
     # Output on checkpoints
-    if(j %% iters_burn == 0) print(paste("at turn", j))
+    if(j %% iters_burn == 0) cat("at turn", j, "\n")
     
     ## (1) Update beta (coefficients)
     
+    # Full penalty matrix including lambdas
+    lambda_S_list <- map2(lambda, S,
+                          ~ .x * .y)
+    
+    lambda_S <- Reduce("+", lambda_S_list)
+    
     # Matrix needed for both moments
-    beta_helper <- solve( t(X) %*% X + lambda * S )
+    beta_helper <- solve( t(X) %*% X + lambda_S )
     
     # Posterior conditional expectation
     beta_ex <- beta_helper %*% t(X) %*% y
     
     # Posterior conditional variance
-    beta_var <- beta_helper * sigmasq
+    beta_var <- sigmasq * beta_helper
     
     # Generate new beta sample
     beta <- rmvnorm(n = 1, beta_ex, beta_var) %>% t()
@@ -2049,9 +2077,10 @@ Gibbs.Pen.Lin.Reg <- function(
     
     # 2nd parameter of inverse gamma
     
-    b_post <- 0.5 * 
-      t((y - X %*% beta)) %*% (y - X %*% beta) + 
-      (lambda / 2) * t(beta) %*% S %*% beta + b_pri
+    b_post <- 
+      0.5 * t((y - X %*% beta)) %*% (y - X %*% beta) + 
+      0.5 * t(beta) %*% lambda_S %*% beta + 
+      b_pri
     
     # Generate new sigma squared sample
     precision <- rgamma(1, a_post, b_post)
@@ -2059,40 +2088,196 @@ Gibbs.Pen.Lin.Reg <- function(
     
     ## (3) Update lambda (beta function smoothness factor)
     
-    d_post <- (1 / (2 * sigmasq)) * t(beta) %*% S %*% beta + d_pri
-    
-    lambda <- rgamma(1, c_post, d_post)
+    d_post <- map(S,
+                  function(S_j){
+                    (1 / (2 * sigmasq)) * t(beta) %*% S_j %*% beta + d_pri
+                  })
+                    
+    lambda <- map2_dbl(c_post, d_post,
+                       function(c_new, d_new){
+                         rgamma(1, c_new, d_new)
+                       })
     
     ## Save results
-    t <- j - iters_burn
+    iter <- j - iters_burn
     
-    if(t > 0){
-      beta_out[t,] <- beta
-      sigmasq_out[t,] <- sigmasq
-      gammasq_out[t,] <- gammasq
+    if(iter > 0){
+      beta_out[iter,] <- beta
+      sigmasq_out[iter,] <- sigmasq
+      lambda_out[iter,] <- lambda
+    } else{
+      beta_burn[j,] <- beta
+      sigmasq_burn[j,] <- sigmasq
+      lambda_burn[j,] <- lambda
     }
   }
   
   return(list("beta" = beta_out,
               "sigma_sq" = sigmasq_out,
-              "lambda" = lambda_out))
+              "lambda" = lambda_out,
+              "burn_beta" = beta_burn,
+              "burn_sigma_sq" = sigmasq_burn,
+              "burn_lambda" = lambda_burn))
 }
 ```
+
+## Fit on individual model {#sec-bayes-individual}
 
 ```{r}
 #| label: bayes soap film sample
 
-# Set outcome
-y_mx <- as.matrix(cranio_models$data[[1]]$diff)
+### Run Gibbs sampler for soap film
 
-S_mx <- Reduce("+", cranio_soap$S)
+# Set data to train on, especially outcome
+data_eg <- so_test_fit %>% 
+  filter(fusion_type == "Sagittal") %>% 
+  filter(fname == first(fname)) %>% 
+  slice(1)
 
-# Run Gibbs sampler
-so_bayes_1 <- Gibbs.Pen.Lin.Reg(
-  y = y_mt, X = so_X, S = S_mx,
-  beta0 = rep(1, 3), sigmasq0 = 1, gammasq0 = 1, 
-  a_pri = 1, b_pri = 1, c_pri = 1, d_pri = 1,
-  iters = 1e4, burn_pct = 0.1
+y_mx <- as.matrix(data_eg$diff)
+
+# Set penalty matrices
+S_mx <- cranio_soap$S
+
+# Set default parameters
+def_pars <- c(
+  "sigma_sq" = var(y_mx)[1,1]
+  "lambda" = 0.1,
+  "a" = 1,
+  "b" = 1,
+  "c" = 1,
+  "d" = 1
 )
+
+# Set iterations
+bayes_soap_iters <- 1e3
+
+# Track time
+bayes_soap_start <- Sys.time()
+
+# Run function
+soap_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
+  y = y_mx, X = so_X, S = S_mx,
+  sigmasq0 = def_pars["sigma_sq"], 
+  lambda0 = def_pars["lambda"], 
+  a_pri = def_pars["a"],
+  b_pri = def_pars["b"],
+  c_pri = def_pars["c"],
+  d_pri = def_pars["d"],
+  iters = bayes_soap_iters, 
+  burn_pct = 0.1
+)
+
+# Save time length
+soap_bayes_time <- difftime(Sys.time(), bayes_soap_start, units = "mins")
+
+# Output time
+cat(bayes_soap_iters, "MCMC iterations time:", so_bayes_time, "mins")
+```
+
+### MCMC Diagnostics {#sec-mcmc-diagnostics}
+
+```{r}
+#| label: MCMC diagnostics
+
+# Make accessible all parameters together
+
+soap_bayes1_tr <- imap(
+  soap_bayes1,
+  function(x, xn){
+    x <- as_tibble(x)
+    if(ncol(x) == 1){
+      names(x) <- xn
+    } else {
+      names(x) <- paste0(xn, ".", 1:ncol(x))
+    }
+    x %<>% 
+      mutate(iter = 1:n(), .before = everything()) %>% 
+      pivot_longer(-iter, 
+               names_pattern = "(burn_)?(.*)",
+               names_to = c("draw", "name"))
+    
+    x
+  }
+) %>% 
+  unname() %>% 
+  list_rbind() %>% 
+  mutate(draw_cat = if_else(draw == "burn_", 
+                            "Burn-In", "Posterior"))
+
+# Add default parameters to this table
+trace_default <- soap_bayes1_tr %>% 
+  filter(draw_cat == "Burn-In") %>% 
+  distinct(draw_cat, name) %>% 
+  filter(!str_detect(name, "beta")) %>% 
+  mutate(
+    iter = 0,
+    value = case_when(
+      str_detect(name, "sigma_sq") ~ def_pars["sigma_sq"],
+      str_detect(name, "lambda") ~ def_pars["lambda"],
+      T ~ NA
+    ))
+
+soap_bayes1_tr %<>% bind_rows(trace_default)
+
+# Trace plot of sigma
+sigma_trace <- ggplot(soap_bayes1_tr %>% 
+                        filter(str_detect(name, "sigma_sq"))) +
+  geom_line(aes(x = iter, y = value)) +
+  facet_wrap(~draw_cat, nrow = 1, scales = "free")
+
+sigma_trace
+
+# Trace plot of lambdas
+lambda_trace <- ggplot(soap_bayes1_tr %>% 
+                         filter(str_detect(name, "lambda"))) +
+  geom_line(aes(x = iter, y = value, color = name), alpha = 0.5) +
+  facet_wrap(~draw_cat, nrow = 1, scales = "free") +
+  theme(legend.position = "bottom")
+
+lambda_trace
+
+# Trace plot of betas
+beta_trace <- ggplot(soap_bayes1_tr %>% 
+                         filter(str_detect(name, "beta"))) +
+  geom_line(aes(x = iter, y = value, color = name), alpha = 0.5) +
+  theme(legend.position = "bottom") +
+  facet_wrap(~draw_cat, nrow = 1, scales = "free_x") +
+  guides(color = "none")
+
+beta_trace
+```
+
+### Visualize predictions {#sec-bayes-soap-plot}
+
+```{r}
+#| label: bayes soap predictions
+
+# Extract posterior mean coefficients
+soap_bayes1_betas <- colMeans(soap_bayes1$beta)
+
+# Calculate predictions from these coefficients
+soap_bayes1_preds <- so_X %*% soap_bayes1_betas
+
+# Add predictions to data
+data_eg %<>% mutate(fit_bayes = as.numeric(soap_bayes1_preds))
+
+data_toplot <- data_eg %>% 
+  select(row, col, diff, fit_gcv = fit, fit_bayes) %>% 
+  pivot_longer(-c(row, col))
+
+# Plot truth and predictions from Bayesian example
+soap_bayes1_plot <- ggplot(data_toplot) +
+  geom_raster(aes(x = row, y = col, fill = value)) +
+  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+  facet_wrap(~name, ncol = 1) +
+  labs(x = NULL, y = NULL, 
+       fill = "Growth",
+       title = "Bayesian Prediction Comparison") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+soap_bayes1_plot
 ```
 
