@@ -28,7 +28,46 @@ number-sections: true
 editor: source
 ---
 
-\newcommand{\iid}{\,{\buildrel iid \over \sim}\,}
+::: {.hidden}
+$$
+\newcommand{\balpha}{\boldsymbol{\alpha}}
+\newcommand{\bbeta}{\boldsymbol{\beta}}
+\newcommand{\bgamma}{\boldsymbol{\gamma}}
+\newcommand{\hatbbeta}{\hat{\bbeta}}
+\newcommand{\hatbgamma}{\hat{\bgamma}}
+
+\newcommand{\bX}{\mathbf{X}}
+\newcommand{\bY}{\mathbf{Y}}
+\newcommand{\by}{\mathbf{y}}
+\newcommand{\bH}{\mathbf{H}}
+\newcommand{\bx}{\mathbf{x}}
+\newcommand{\bG}{\mathbf G}
+\newcommand{\bS}{\mathbf S}
+\newcommand{\bC}{\mathbf C}
+\newcommand{\bI}{\mathbf I}
+\newcommand{\hatbG}{\widehat \bG}
+
+\newcommand{\bSigma}{\boldsymbol{\Sigma}}
+\newcommand{\bsigma}{\boldsymbol{\sigma}}
+\newcommand{\hatVar}{\widehat{\Var}}
+\newcommand{\hatCov}{\widehat{\Cov}}
+\newcommand{\bLambda}{\boldsymbol{\Lambda}}
+\newcommand{\hatbLambda}{\hat{\bLambda}}
+\newcommand{\blambda}{\boldsymbol{\lambda}}
+\newcommand{\hatblambda}{\hat{\blambda}}
+\newcommand{\btheta}{\boldsymbol{\theta}}
+\newcommand{\hatbSigma}{\widehat{\boldsymbol{\Sigma}}}
+\newcommand{\bmu}{\boldsymbol{\mu}}
+
+\newcommand{\diag}{\mathrm{diag}}
+\newcommand{\tr}{\mathrm{tr}}
+
+\newcommand{\bzero}{\boldsymbol{0}}
+\newcommand{\bone}{\boldsymbol{1}}
+\def\iid{\,{\buildrel iid \over \sim}\,} 
+\newcommand{\reals}{\mathbb{R}}
+$$
+:::
 
 ```{r}
 #| label: setup
@@ -48,7 +87,7 @@ pacman::p_load(
   
   # Format
   latex2exp, table1, gtsummary,
-  broom.helpers, broom.mixed, progressr, cli,
+  broom.helpers, broom.mixed, colorspace,
   
   # Modeling
   mgcv,
@@ -114,19 +153,26 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Bayesian soap film smoother was fit on one individual patient (@sec-bayes-individual)
--   Assumptions for Bayesian model were written out (@sec-bayes-soap)
+-   Fit Bayesian soap film smoother on one individual patient (@sec-bayes-individual)
+-   Wrote out assumptions for Bayesian model (@sec-bayes-soap)
+-   Plotted posterior mean predictions from this Bayesian model (@sec-bayes-soap-plot)
+-   Made trace plots of posterior and burn-in period, which show relatively fast convergence of the parameters (@sec-mcmc-diagnostics)
+-   Added timing to track how long each part of the Gibbs sampler takes (@sec-mcmc-diagnostics)
+-   Changed calculation for $\sigma^2$ in the Gibbs sampler to try to speed up that step *(not sure this worked)* (@sec-bayes-individual)
+-   Changed notation changed for Bayesian models and earlier soap film descriptions to clear the way for multiple individuals / hierarchical data (@sec-soap-film-components)
+- Compared plots of (GCV-optimized) predictions based on only interior spline, only boundary spline, and both (@sec-soap-map); investigated the boundary splines
 
 ## Questions
 
--   Is Moran's I statistic relevant to show whether any given subset of the data actually has spatial dependence? I'm especially wondering whether the normative patients' growth has significant spatial dependence, or whether there is spatial dependence for very young patients.
--   Looking at a subset of the data, we can see that the images "sub-CNH_0002_dol-1295" and "sub-CNH_Cranio_00002_dol-61" have the exact same pointwise differences, even though the first is marked as having no fusion and the second is marked as having a Sagittal fusion. Are these the same image?
+-   Is my notation consistent with the grant?
+-   Should variable names in my code be consistent with notation? (e.g. right now I'm using X in the code for the design matrix but C in notation).
 
 ## Collaborator Questions
 
 -   7 patients in the data have *sphenoidal involvement* marked as 1. What effect might this have on volumes?
 -   18 patients have *previous surgery* marked as 1. Is this specifically indicating a previous surgery related to craniosynostosis?
 -   Should we control for image type in later analyses?
+-   Looking at a subset of the data, we can see that the images "sub-CNH_0002_dol-1295" and "sub-CNH_Cranio_00002_dol-61" have the exact same pointwise differences, even though the first is marked as having no fusion and the second is marked as having a Sagittal fusion. Are these the same image?
 
 # Covariates Data
 
@@ -820,7 +866,7 @@ G_{ir} = {} & \beta_{0, r} + \beta_{1,r} [\text{Sagittal}]_i + \beta_{2,r} [\tex
 & \beta_{6,r} [\text{Sex: Male}]_i + \beta_{7,r}(Age_i) + \epsilon_{ir}
 \end{split} \\ \\
 \begin{split}
-\epsilon_{ir} \,{\buildrel iid \over \sim}\,{} & N(0, \sigma^2_r)
+\epsilon_{ir} \iid {} & N(0, \sigma^2_r)
 \end{split}
 \end{gather*}
 $$
@@ -1044,17 +1090,17 @@ plot_region_smooth_pred
 
 To get a more detailed spatial perspective, we then run the same regression model on each individual pixel in the data.
 
-We denote the growth for patient $i$ in matrix row $x$ and column $y$ as $G_{i}(x,y)$ and let $f(x,y,\cdot)$ be a cubic regression spline function estimated on observations at pixel $[x,y]$; then this model can be written:
+We denote the growth for patient $i$ in matrix row $x$ and column $y$ as $G_{i}(x,y)$ and let $f^{(x,y)}(\cdot)$ be a cubic regression spline function estimated on observations at pixel $(x,y)$; then this model can be written:
 
 $$
 \begin{gather*}
 \begin{split}
-G_{i}(x,y) = {} & \beta_{0}(x,y) + \beta_{1}(x,y) [\text{Sagittal}]_i + \beta_{2}(x,y) [\text{Metopic}]_i + \\
-& \beta_{3}(x,y) [\text{Right Coronal}]_i + \beta_{4}(x,y) [\text{Left Coronal}]_i + \\
-& \beta_{5}(x,y) [\text{Left and Right Coronal}]_i + \\
-& \beta_{6}(x,y) [\text{Sex: Male}]_i + f^{(x,y)}(Age_i) + \epsilon_{i}(x,y)
+G_{i}^{(x,y)} = {} & \beta_{0}^{(x,y)} + \beta_{1}^{(x,y)} [\text{Sagittal}]_i + \beta_{2}^{(x,y)} [\text{Metopic}]_i + \\
+& \beta_{3}^{(x,y)} [\text{Right Coronal}]_i + \beta_{4}^{(x,y)} [\text{Left Coronal}]_i + \\
+& \beta_{5}^{(x,y)} [\text{Left and Right Coronal}]_i + \\
+& \beta_{6}^{(x,y)} [\text{Sex: Male}]_i + f^{(x,y)}(Age_i) + \epsilon_{i}^{(x,y)}
 \end{split} \\ \\
-\epsilon_{i}(x,y) \,{\buildrel iid \over \sim}\,{} N(0, \sigma^2(x,y))
+\epsilon_{i}^{(x,y)} \iid{} N(0, \sigma^{2 \ (x,y)})
 \end{gather*}
 $$
 
@@ -1165,15 +1211,15 @@ plot_pixel_pred
 
 Next, for a preliminary spatial model, we split the data only by fusion type. Based on the plots above, the age and sex effects are basically uniform across all of the pixels, so we include these as linear terms that do not vary spatially. Otherwise, we only include a tensor spline interaction between row and column indices. Our model does not reflect the brain boundary. It is a generalized additive model with an intercept and a tensor product smooth of row and column indices.
 
-We denote the growth for patient $i$ with suture fusion type $s$ in matrix row $j$ and column $k$ as $Y_{sijk}$, let $f_{s}(\cdot)$ be a cubic regression spline estimated on observations from patients with suture fusion $s$, and let $g_s(\cdot, \cdot)$ be a tensor product smooth with a cubic regression spline basis; then this model can be written:
+We denote the growth for patient $i$ with suture fusion type $s$ in matrix row $x$ and column $y$ as $G_{si}(x,y)$. Let $f_{s}(\cdot)$ be a cubic regression spline estimated on observations from patients with suture fusion $s$ and let $h_s(\cdot, \cdot)$ be a tensor product smooth with a cubic regression spline basis; then this model can be written:
 
 $$
 \begin{gather*}
 \begin{split}
 G_{si}(x,y) = {} & \beta_{0, s} + \beta_{1,s} [\text{Sex: Male}]_i + \\
-& f_{s}(Age_i) + h_s(x, y) + \epsilon_{si}(x,y)
+& f_{s}(Age_i) + h_s(x, y) + \epsilon_{si}^{(x,y)}
 \end{split} \\ \\
-\epsilon_{si}(x,y) \,{\buildrel iid \over \sim}\,{} N(0, \sigma^2_s).
+\epsilon_{si}^{(x,y)} \iid{} N(0, \sigma^2_s).
 \end{gather*}
 $$
 
@@ -1348,7 +1394,7 @@ grid_viz
 
 ## Smoother Object {#sec-soap-film-smoothcon}
 
-Next, we use the set of row and column indices (shared among all images) to create a design matrix of 2-dimensional smoothers that can be used for every individual image. We use the `mgcv::smoothCon` function.
+Next, we use the set of row and column indices (shared among all images) to create a design matrix containing 2-dimensional basis functions that make up a smoother that can be used for every individual image. We use the `mgcv::smoothCon` function.
 
 ```{r}
 #| label: soap film basis
@@ -1362,7 +1408,8 @@ save(matrix_generic, file = here::here("intermediate", "matrix_indices.rda"))
 # Construct soap film smoother object
 cranio_soap <- smoothCon(
   s(
-    row, col, bs = "so", 
+    row, col, 
+    bs = "so", 
     xt = list(
       bnd = bound_list)
   ),
@@ -1375,19 +1422,45 @@ cranio_soap <- cranio_soap[[1]]
 
 ### Smoother Model Components {#sec-soap-film-components}
 
-From this smoother object, we extract the relevant matrices that will allow us to fit the model: the $n \times K$ design matrix $X$ and the penalty matrices for the boundary and interior splines ($\mathbf{S}^{(1)}$ and $\mathbf{S}^{(2)}$ respectively). In `mgcv`, The smoother object stores each penalty matrix as size $K \times K$. So we can denote , even though $K = k_1 + k_2$, where $k_1$ is the dimension of the boundary spline and $k_2$ is the dimension of the interior film spline. To see the effect of each of these penalty matrices, we extract each individual matrix excluding the block 0 matrices.
+From this smoother object, we extract the relevant matrices that will allow us to fit the model. Let $m$ be the number of pixels in each image and $K$ be the number of basis functions evaluated on these pixels. Then we extract the $m \times K$ design matrix $\bC$, the $k_b \times k_b$ penalty matrix for the boundary spline ($\bS_b$) and the $k_f \times k_f$ penalty matrix for the interior spline ($\bS_f$). In `mgcv`, The smoother object stores each penalty matrix as a block-diagonal size $K \times K$ matrix, where $K = k_b + k_f$. We denote these $\bS^{(b)}$ and $\bS^{(f)}$:
 
-We estimate the coefficients for this model using the closed-form expression
 $$
-\hat{\boldsymbol{\beta}} = (\mathbf{X}^\top \mathbf{X} + \boldsymbol{\lambda} \mathbf{S^*})^{-1}\mathbf{X}^\top \mathbf{y}
+\begin{aligned}
+\bS^{(b)} &= \begin{bmatrix}
+\bS_b & \bzero_{k_b \times k_f} \\
+\bzero_{k_f \times k_b} & \bzero_{k_f \times k_f}
+\end{bmatrix} \\
+\bS^{(f)} &= \begin{bmatrix}
+\bzero_{k_b \times k_b} & \bzero_{k_b \times k_f} \\
+\bzero_{k_f \times k_b} & \bS_f
+\end{bmatrix}
+\end{aligned}
 $$
 
-We currently run a grid search to find the optimal smoothing penalty constant $\lambda$ (called "sp" in mgcv). We use the range $10^{-9}, ..., 10^{-2}$. We then select the model that achieves the minimum generalized cross-validation ("GCV") score:
+In order to isolate the effect of each separate spline, we also remove the block zero matrices to convert each penalty matrix into the original individual matrices $S_b$ and $S_f$.
+
+To estimate coefficients for this model, we multiply these penalty matrices by smoothing parameters $\lambda_b$ and $\lambda_f$. We then use the "total penalty matrix"
+
+$$
+\bS^{(\lambda)}_T = \lambda_b \bS^{(b)} + \lambda_f \bS^{(f)} = 
+\begin{bmatrix}
+\lambda_b \bS_b & \bzero_{k_b \times k_f} \\
+\bzero_{k_f \times k_b} & \lambda_f \bS_f
+\end{bmatrix}.
+$$
+
+Then, we estimate the coefficients for this model for patient $i$ using the closed-form expression
+
+$$
+\hatbgamma_i = (\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \bG
+$$
+
+We run a grid search to find the optimal smoothing penalty constants $\lambda_1$ and $\lambda_2$ (called "sp" in mgcv). We use the range $10^{-9}, ..., 10^{-2}$. We then select the model that achieves the minimum generalized cross-validation ("GCV") score:
 $$
 \begin{gather*}
-GCV = \frac{n \sum_{x,y} [G(x,y) - \hat{f}(x,y)]^2}{[n - tr(\mathbf{H})]^2} \\
-\mathbf{H} = \mathbf{X} (\mathbf{X}^\top \mathbf{X} + \lambda \mathbf{S})^{-1}\mathbf{X}^\top \\
-tr(\mathbf{H}) = tr((\mathbf{X}^\top \mathbf{X} + \lambda \mathbf{S})^{-1}\mathbf{X}^\top \mathbf{X} )
+GCV = \frac{m \sum_{x,y} [G_i(x,y) - \hat{f_i}(x,y)]^2}{[m - tr(\bH)]^2} \\
+\bH = \bC (\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \\
+\tr(\bH) = \tr((\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \bC)
 \end{gather*}
 $$
 
@@ -1631,11 +1704,11 @@ film_map_optim_fit <- film_map_optim %>%
   unnest(c(fit, data))
 
 # Plot model with lowest GCV for each patient
-plot_so_map_nobound <- ggplot(film_map_optim_fit) +
+plot_map_nobound <- ggplot(film_map_optim_fit) +
   geom_raster(aes(x = row, y = col, fill = fit)) +
   scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
   labs(x = NULL, y = NULL, 
-       fill = "Pred. Growth exc. Bound.",
+       fill = "Pred. Growth",
        title = "Predictions: Interior Only") +
   coord_fixed() +
   theme_void() +
@@ -1643,7 +1716,7 @@ plot_so_map_nobound <- ggplot(film_map_optim_fit) +
   facet_wrap(~fusion_type, nrow = 1)
 
 # Combine and print
-map_film_both <- ggarrange(plot_so_map_nobound, 
+map_film_both <- ggarrange(plot_map_nobound, 
                            plot_so_test_data, 
                            ncol = 1)
 map_film_both
@@ -1804,7 +1877,8 @@ soap_map_df <- so_test_df %>%
           mutate(fit = map(coeffs, ~ so_X %*% .x),
                  fit_bound = map(coeffs, 
                                  ~ so_X[, bound_cols] %*% .x[bound_cols]),
-                 fit_int = map(coeffs, ~ so_X[, film_cols] %*% .x[film_cols])) %>% 
+                 fit_int = map(coeffs, 
+                               ~ so_X[, film_cols] %*% .x[film_cols])) %>% 
           # Sum of square residuals
           mutate(ssr = map_dbl(fit, ~sum((d$diff - .x)^2))) %>% 
           # GCV Score
@@ -1843,7 +1917,14 @@ kbl(soap_map_df %>%
 # Extract data and fitted values for plotting
 so_test_fit <- soap_map_df %>% 
   select(fname, fusion_type, fit, fit_bound, fit_int, data) %>% 
-  unnest(c(fit, fit_bound, fit_int, data))
+  unnest(c(fit, fit_bound, fit_int, data)) %>% 
+  mutate(across(matches("fit"), as.numeric)) %>% 
+  # Compare separate components
+  mutate(fit_sep = fit_bound + fit_int,
+         fit_comp = (fit - fit_sep)^2)
+
+# Full value range
+
 
 # Plot model with lowest GCV for each patient
 plot_map_soap <- ggplot(so_test_fit) +
@@ -1863,32 +1944,42 @@ map_soap_both <- ggarrange(plot_map_soap,
                            ncol = 1)
 map_soap_both
 
-# Plot only boundary spline from model with lowest GCV for each patient
-plot_map_soap_bound <- ggplot(so_test_fit) +
-  geom_raster(aes(x = row, y = col, fill = fit_bound)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
+### Compare predictions with only bound, only interior, both splines, and truth
+plot_map_build <- so_test_fit %>% 
+  pivot_longer(c(fit_int, fit_bound, fit, diff)) %>% 
+  mutate(name_cln = fct_recode(fct_inorder(name),
+                               "Data" = "diff",
+                               "Interior" = "fit_int",
+                               "Boundary" = "fit_bound",
+                               "Soap Film" = "fit"),
+         ) %>% 
+  ggplot() +
+  geom_raster(aes(x = row, y = col, fill = value)) +
+  scale_fill_continuous_divergingx(palette = "RdYlBu", rev = TRUE,
+                                   l3 = 0, p3 = 2) +
   labs(x = NULL, y = NULL, fill = "Pred. Growth", 
-       title = "Predictions: Boundary Only") +
+       title = "Predictions") +
+  facet_grid(name_cln ~ fusion_type) + 
   coord_fixed() +
   theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fusion_type, nrow = 1)
+  theme(legend.position = "bottom")
 
-plot_map_soap_bound
-
-# Compare predictions from interior, boundary, both, and truth
-map_soap_build <- ggarrange(
-  plot_so_map_nobound,
-  plot_map_soap_bound,
-  plot_map_soap,
-  plot_so_test_data,
-  ncol = 1, legend = "none"
-  )
-
-map_soap_build
+plot_map_build
 ```
 
-### All Data Vectorized {#sec-soap-film-individual}
+For this subset, we make predictions using only the interior spline, only the boundary spline, and both, and compare all three to the actual data. This shows an interesting result: when we exclude the boundary spline entirely and estimate coefficients, the resulting predicted values are almost all non-negative. When we estimate the coefficients using both splines and then model their contributions separately, the contribution from the interior is often negative, resulting in predictions near 0. This is because the basis functions in the design matrix are not just defined on the boundary; they are defined over the entire space, based on the boundary condition described by a cyclic boudnary spline. This is described in section 4.1 in the soap film paper (p. 940):
+
+First, suppose values on the boundary follow a function $\bG_i^{(B)} = f_b(r)$, where $r$ is the distance along the boundary loop from an arbitrary starting point. 
+
+Second, represent that function with the basis expansion $f_b(r) = \sum_{j=1}^J \alpha_j \delta_j(r)$. To estimate $\balpha$, include a penalty functional $\balpha^\top \bS_b \balpha$.
+
+Third, for each $j = 1, \ldots, J$, determine the basis-specific boundary condition by setting $\alpha_j = 1$ and $\alpha_l = 0, \ l \neq j$. *I think this means all we're left with is * $f_b(r) = \delta_j(r)$. Solve for the function $a_j(x,y)$ which satisfies this boundary condition based on $\delta_j$ and satisfies the equation $\frac{\partial^2 a_j}{\partial x^2} + \frac{\partial^2 a_j}{\partial y^2} = 0$. 
+
+Then the ``boundary-condition-induced-function" $a(x,y)$ has the basis function representation $a(x,y) = \sum_{j=1}^J \alpha_j a_j(x,y)$.
+
+## Fitting Coefficients for All Data {#sec-soap-film-individual}
+
+Once we have set up the soap film model, we estimate coefficients for each individual, $\hatbgamma_i$. These are stored in a nested tibble, which we save as an RDS file.
 
 ```{r}
 #| label: individual soap models
@@ -1949,6 +2040,8 @@ cranio_models %<>%
 
 ```
 
+We create a dataset containing only the demographics and estimated coefficients for each individual, and save this along with the design matrix $\bC$, for predictions from these soap film models based on demographics.
+
 ```{r}
 #| label: soap individuals data
 
@@ -1980,9 +2073,57 @@ save(cranio_models_beta, so_X,
      file = here::here("intermediate", "individual_soap_film_fits.rda"))
 ```
 
-# Bayesian Soap Film (#sec-bayes-soap)
+# Bayesian Soap Film {#sec-bayes-soap}
 
-We assume the priors:
+Next, we fit a model on one individual using a Gibbs sampler. Recall that we defined the "total penalty matrix" as 
+$$
+\bS^{(\lambda)}_T =
+\begin{bmatrix}
+\lambda_b \bS_b & \bzero_{k_b \times k_f} \\
+\bzero_{k_f \times k_b} & \lambda_f \bS_f
+\end{bmatrix}.
+$$
+Note that neither $S_b$ nor $S_f$ are full-rank, but we can define the generalized inverse of $\bS^{(\lambda)}_T$ as
+$$
+\bS^{(\lambda) \ -}_T =
+\begin{bmatrix}
+\frac{1}{\lambda_b} \bS_b^- & \bzero_{k_b \times k_f} \\
+\bzero_{k_f \times k_b} & \frac{1}{\lambda_f} \bS_f^-
+\end{bmatrix}.
+$$
+This generalized inverse is not positive-definite, but we can use it in an improper prior.
+
+We also introduce the notation 
+$$
+\bbeta = \begin{pmatrix} \bbeta_{b \ [k_b \times 1]} \\ \bbeta_{f \ [k_f \times 1]} \end{pmatrix},
+$$
+where $\bbeta_b$ are the coefficients corresponding to the boundary spline and $\bbeta_f$ are the coefficients corresponding to the interior spline.
+
+Then we assume the (conjugate) priors:
+
+$$
+\begin{aligned}
+\bG_i(x,y) & \sim \mathrm{N}_m(\bC^\top \bgamma_i, \sigma^2 \bI_m) \\
+\bgamma_i & \sim \mathrm{N}_K(\bzero, \sigma^2 \bS^{(\lambda) \ -}_T) \\
+\sigma^2 & \sim \mathrm{Inv. Gamma}(a, b) \\
+\lambda_b & \sim \mathrm{Gamma}(c_b, d_b) \\
+\lambda_f & \sim \mathrm{Gamma}(c_f, d_f) \\
+\lambda_b & \perp \lambda_f
+\end{aligned}
+$$
+
+We choose simple priors: $a = 1, \ b = 1,  \ c_b = c_f = 1, d_b = d_f = 1$. We have not yet checked how informative they are.
+
+These priors lead to the full conditionals:
+
+$$
+\begin{aligned} 
+\ [\lambda_b | \bbeta_b, \sigma^2] & \sim \mathrm{Gamma} \Bigg( \frac{k_b}{2} + c_b, \ \frac{1}{2 \sigma^2} \bbeta_b^\top S_b \bbeta_b + d_b \Bigg) \\
+[\lambda_f | \bbeta_f, \sigma^2] & \sim \mathrm{Gamma} \Bigg( \frac{k_f}{2} + c_f, \ \frac{1}{2 \sigma^2} \bbeta_f^\top S_f \bbeta_f + d_f \Bigg) \\
+[\sigma^2 | \bbeta, \lambda_b, \lambda_f] & \sim \mathrm{Inv. Gamma} \Bigg( \frac{m}{2} + \frac{K}{2} + a, \ \frac{1}{2} \Big[ \bG^\top \bG  - 2 \bbeta^\top \bC^\top \bG + \bbeta^\top \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big) \bbeta \Big] + b \Bigg) \\
+[\bbeta | \sigma^2, \lambda_b, \lambda_f] & \sim \mathrm{N}_K \Bigg( \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big)^{-1} \bC^\top \bG, \ \sigma^2 \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big)^{-1} \Bigg)
+\end{aligned}
+$$
 
 ```{r}
 #| label: bayesian regression function
@@ -1997,6 +2138,18 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     iters = 1e4, burn_pct = 0.1 # MCMC parameters
 ){
   
+  # Set up time tracking
+  time_check <- Sys.time()
+  time_pts <- c("start" = time_check)
+  timer <- c("setup" = 0,
+             "lambda_s" = 0,
+             "x_inverse" = 0,
+             "beta_moments" = 0,
+             "beta_draw" = 0,
+             "sigma2_update" = 0,
+             "lambdas_update" = 0)
+  
+  
   ### Reformat penalty matrix
   if(is.matrix(S)){ S <- list(S) }
   
@@ -2006,7 +2159,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
   K <- ncol(X)
   N <- nrow(X)
   
-  stopifnot(nrow(y) == N)
+  stopifnot(length(y) == N)
   
   ## Iterations of burn-in
   iters_burn <- ceiling(iters * burn_pct)
@@ -2046,23 +2199,38 @@ Gibbs.Pen.Lin.Reg_FN <- function(
   sigmasq_burn <- array(0, dim = c(iters_burn, 1))
   lambda_burn <- array(0, dim = c(iters_burn, pen_J))
   
+  timer["setup"] <- timer["setup"] + 
+    difftime(Sys.time(), time_check, units = "secs")
+  time_check <- Sys.time()
+  
   ### Run MCMC loop
   
-  for(j in 1:iters){
+  for(iter in 1:iters){
     
     # Output on checkpoints
-    if(j %% iters_burn == 0) cat("at turn", j, "\n")
+    if(iter %% iters_burn == 0) cat("at turn", iter, "\n")
     
     ## (1) Update beta (coefficients)
     
     # Full penalty matrix including lambdas
     lambda_S_list <- map2(lambda, S,
-                          ~ .x * .y)
+                          function(l_const, s_mx){
+                            l * s_mx
+                          })
     
     lambda_S <- Reduce("+", lambda_S_list)
     
+    timer["lambda_s"] <- timer["lambda_s"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
+    
     # Matrix needed for both moments
-    beta_helper <- solve( t(X) %*% X + lambda_S )
+    xtx_plus_pen <- t(X) %*% X + lambda_S
+    beta_helper <- solve(xtx_plus_pen)
+    
+    timer["x_inverse"] <- timer["x_inverse"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
     
     # Posterior conditional expectation
     beta_ex <- beta_helper %*% t(X) %*% y
@@ -2070,21 +2238,31 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     # Posterior conditional variance
     beta_var <- sigmasq * beta_helper
     
+    timer["beta_moments"] <- timer["beta_moments"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
+    
     # Generate new beta sample
     beta <- rmvnorm(n = 1, beta_ex, beta_var) %>% t()
+    
+    timer["beta_draw"] <- timer["beta_draw"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
     
     ## (2) Update sigma^2 (residual variance)
     
     # 2nd parameter of inverse gamma
-    
     b_post <- 
-      0.5 * t((y - X %*% beta)) %*% (y - X %*% beta) + 
-      0.5 * t(beta) %*% lambda_S %*% beta + 
-      b_pri
+      b_pri - t(y) %*% X %*% beta + 
+      0.5 * (sum(y^2) + t(beta) %*% xtx_plus_pen %*% beta)
     
     # Generate new sigma squared sample
     precision <- rgamma(1, a_post, b_post)
     sigmasq <- 1 / precision
+    
+    timer["sigma2_update"] <- timer["sigma2_update"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
     
     ## (3) Update lambda (beta function smoothness factor)
     
@@ -2098,26 +2276,36 @@ Gibbs.Pen.Lin.Reg_FN <- function(
                          rgamma(1, c_new, d_new)
                        })
     
-    ## Save results
-    iter <- j - iters_burn
+    timer["lambdas_update"] <- timer["lambdas_update"] + 
+      difftime(Sys.time(), time_check, units = "mins")
+    time_check <- Sys.time()
     
-    if(iter > 0){
-      beta_out[iter,] <- beta
-      sigmasq_out[iter,] <- sigmasq
-      lambda_out[iter,] <- lambda
+    ## Save results
+    iter_post <- iter - iters_burn
+    
+    if(iter_post > 0){
+      beta_out[iter_post,] <- beta
+      sigmasq_out[iter_post,] <- sigmasq
+      lambda_out[iter_post,] <- lambda
     } else{
-      beta_burn[j,] <- beta
-      sigmasq_burn[j,] <- sigmasq
-      lambda_burn[j,] <- lambda
+      beta_burn[iter,] <- beta
+      sigmasq_burn[iter,] <- sigmasq
+      lambda_burn[iter,] <- lambda
     }
   }
+  
+  time_pts <- c(time_pts, "end" = Sys.time())
+  timer["total"] <- difftime(time_pts["end"], time_pts["start"], units = "secs")
+  timer <- enframe(timer, name = "step", value = "secs")
   
   return(list("beta" = beta_out,
               "sigma_sq" = sigmasq_out,
               "lambda" = lambda_out,
               "burn_beta" = beta_burn,
               "burn_sigma_sq" = sigmasq_burn,
-              "burn_lambda" = lambda_burn))
+              "burn_lambda" = lambda_burn,
+              "start-stop" = time_pts,
+              "timing" = timer))
 }
 ```
 
@@ -2131,17 +2319,16 @@ Gibbs.Pen.Lin.Reg_FN <- function(
 # Set data to train on, especially outcome
 data_eg <- so_test_fit %>% 
   filter(fusion_type == "Sagittal") %>% 
-  filter(fname == first(fname)) %>% 
-  slice(1)
+  filter(fname == first(fname))
 
-y_mx <- as.matrix(data_eg$diff)
+y_mx <- data_eg$diff
 
 # Set penalty matrices
 S_mx <- cranio_soap$S
 
 # Set default parameters
 def_pars <- c(
-  "sigma_sq" = var(y_mx)[1,1]
+  "sigma_sq" = var(y_mx)[1,1],
   "lambda" = 0.1,
   "a" = 1,
   "b" = 1,
@@ -2151,9 +2338,6 @@ def_pars <- c(
 
 # Set iterations
 bayes_soap_iters <- 1e3
-
-# Track time
-bayes_soap_start <- Sys.time()
 
 # Run function
 soap_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
@@ -2167,23 +2351,32 @@ soap_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
   iters = bayes_soap_iters, 
   burn_pct = 0.1
 )
-
-# Save time length
-soap_bayes_time <- difftime(Sys.time(), bayes_soap_start, units = "mins")
-
-# Output time
-cat(bayes_soap_iters, "MCMC iterations time:", so_bayes_time, "mins")
+# 
+# # Output time
+# cat(bayes_soap_iters, "MCMC iterations time:", so_bayes_time, "mins")
 ```
 
 ### MCMC Diagnostics {#sec-mcmc-diagnostics}
 
+Trace plots show that the parameters converge to a stable distribution quickly and are well-differentiated.
+
 ```{r}
 #| label: MCMC diagnostics
+
+# Check timing
+mcmc_time <- soap_bayes1$timing %>% 
+  mutate(pct = as.numeric(secs) / last(secs))
+
+kbl(mcmc_time %>% mutate(pct = scales::label_percent(accuracy = 0.1)(pct)), 
+    caption = "Loop Timing") %>% 
+  kable_styling(full_width = F)
 
 # Make accessible all parameters together
 
 soap_bayes1_tr <- imap(
-  soap_bayes1,
+  soap_bayes1 %>% 
+    list_modify("timing" = zap(), 
+                "start-stop" = zap()),
   function(x, xn){
     x <- as_tibble(x)
     if(ncol(x) == 1){
