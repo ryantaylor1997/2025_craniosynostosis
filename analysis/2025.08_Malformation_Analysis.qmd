@@ -93,12 +93,15 @@ pacman::p_load(
   mgcv,
   
   # Useful extensions
-  gtools, readxl, data.table, biglm, reshape2, ggridges,
+  gtools, readxl, data.table, reshape2, ggridges,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
   knitr, kableExtra, ggpubr, ggpmisc
 )
+
+# Load my Rcpp functions
+library(DevCranio)
 
 # Define function for predicting GAM on new data (in homage to get_predictions)
 GetPredictions_FN <- function(model, newdata, 
@@ -952,8 +955,8 @@ region_models %<>%
                        is_coronal <- as.numeric(str_detect(names(coef(m)), "Coronal"))                        
                        
                        # Compute variance of bicoronal combination
-                       bicoronal_v <- t(is_coronal) %*% vcov(m) %*% is_coronal
-                       bicoronal_e <- t(is_coronal) %*% coef(m)
+                       bicoronal_v <- crossprod(is_coronal,  vcov(m)) %*% is_coronal
+                       bicoronal_e <- crossprod(is_coronal, coef(m))
                        
                        # Add bicoronal as row in tidy summary
                        bicoronal_row <- tibble(
@@ -1135,8 +1138,8 @@ if(DO_PRELIM_MODEL_PIXEL){
         is_coronal <- as.numeric(str_detect(names(coef(m)), "Coronal"))                        
         
         # Compute variance of bicoronal combination
-        bicoronal_v <- t(is_coronal) %*% vcov(m) %*% is_coronal
-        bicoronal_e <- t(is_coronal) %*% coef(m)
+        bicoronal_v <- crossprod(is_coronal, vcov(m)) %*% is_coronal
+        bicoronal_e <- crossprod(is_coronal, coef(m))
         
         # Add bicoronal as row in tidy summary
         bicoronal_row <- tibble(
@@ -1374,7 +1377,7 @@ grid_col <- seq(min(cranio_bound_matrix$col), max(cranio_bound_matrix$col),
 grid_all <- expand.grid("row" = grid_row, "col" = grid_col)
 
 # Crop to cranial boundary
-grid_k <- grid_all %>% 
+so_grid_k <- grid_all %>% 
   st_as_sf(coords = c("row", "col")) %>% 
   st_filter(cranio_bound_shape) %>% 
   st_coordinates() %>% 
@@ -1385,7 +1388,7 @@ grid_k <- grid_all %>%
 grid_viz <- ggplot() +
   geom_point(data = cranio_bound_matrix, aes(x = row, y = col), color = "blue") +
   geom_point(data = grid_all, aes(x = row, y = col)) +
-  geom_point(data = grid_k, aes(x = row, y = col), color ="red") +
+  geom_point(data = so_grid_k, aes(x = row, y = col), color ="red") +
   coord_fixed() +
   labs(title = "Grid Sanity Check")
 
@@ -1400,10 +1403,10 @@ Next, we use the set of row and column indices (shared among all images) to crea
 #| label: soap film basis
 
 # Keep only what we need to build smoother
-matrix_generic <- cranio_matrix %>% 
+so_matrix_pts <- cranio_matrix %>% 
   select(row, col)
 
-save(matrix_generic, file = here::here("intermediate", "matrix_indices.rda"))
+save(so_matrix_pts, file = here::here("intermediate", "matrix_indices.rda"))
 
 # Construct soap film smoother object
 cranio_soap <- smoothCon(
@@ -1413,26 +1416,24 @@ cranio_soap <- smoothCon(
     xt = list(
       bnd = bound_list)
   ),
-  data = matrix_generic, knots = grid_k
+  data = so_matrix_pts, knots = so_grid_k
 )
 
 # Keep the actual smooth list
 cranio_soap <- cranio_soap[[1]]
 ```
 
-### Smoother Model Components {#sec-soap-film-components}
-
 From this smoother object, we extract the relevant matrices that will allow us to fit the model. Let $m$ be the number of pixels in each image and $K$ be the number of basis functions evaluated on these pixels. Then we extract the $m \times K$ design matrix $\bC$, the $k_b \times k_b$ penalty matrix for the boundary spline ($\bS_b$) and the $k_f \times k_f$ penalty matrix for the interior spline ($\bS_f$). In `mgcv`, The smoother object stores each penalty matrix as a block-diagonal size $K \times K$ matrix, where $K = k_b + k_f$. We denote these $\bS^{(b)}$ and $\bS^{(f)}$:
 
 $$
 \begin{aligned}
 \bS^{(b)} &= \begin{bmatrix}
-\bS_b & \bzero_{k_b \times k_f} \\
-\bzero_{k_f \times k_b} & \bzero_{k_f \times k_f}
-\end{bmatrix} \\
+\bS_b & \smash{\overbrace{\bzero}^{k_b \times k_f}} \\
+\smash{\underbrace{\bzero}_{k_f \times k_b}} & \smash{\underbrace{\bzero}_{k_f \times k_f}}
+\end{bmatrix} \\ \\ \\ \\
 \bS^{(f)} &= \begin{bmatrix}
-\bzero_{k_b \times k_b} & \bzero_{k_b \times k_f} \\
-\bzero_{k_f \times k_b} & \bS_f
+\smash{\overbrace{\bzero}^{k_b \times k_b}} & \smash{\overbrace{\bzero}^{k_b \times k_f}} \\
+\smash{\underbrace{\bzero}_{k_f \times k_b}} & \bS_f
 \end{bmatrix}
 \end{aligned}
 $$
@@ -1444,33 +1445,16 @@ To estimate coefficients for this model, we multiply these penalty matrices by s
 $$
 \bS^{(\lambda)}_T = \lambda_b \bS^{(b)} + \lambda_f \bS^{(f)} = 
 \begin{bmatrix}
-\lambda_b \bS_b & \bzero_{k_b \times k_f} \\
-\bzero_{k_f \times k_b} & \lambda_f \bS_f
+\lambda_b \bS_b & \smash{\overbrace{\bzero}^{k_b \times k_f}} \\
+\smash{\underbrace{\bzero}_{k_f \times k_b}} & \lambda_f \bS_f
 \end{bmatrix}.
 $$
-
-Then, we estimate the coefficients for this model for patient $i$ using the closed-form expression
-
-$$
-\hatbgamma_i = (\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \bG
-$$
-
-We run a grid search to find the optimal smoothing penalty constants $\lambda_1$ and $\lambda_2$ (called "sp" in mgcv). We use the range $10^{-9}, ..., 10^{-2}$. We then select the model that achieves the minimum generalized cross-validation ("GCV") score:
-$$
-\begin{gather*}
-GCV = \frac{m \sum_{x,y} [G_i(x,y) - \hat{f_i}(x,y)]^2}{[m - tr(\bH)]^2} \\
-\bH = \bC (\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \\
-\tr(\bH) = \tr((\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \bC)
-\end{gather*}
-$$
-
-Last, we reshape our data to include one row for each patient, with a nested data set of row indices, column indices, and pointwise differences.
 
 ```{r}
 #| label: soap film matrices
 
 # Clear memory space
-rm(cranio_bound_matrix, cranio_bound_shape)
+rm(cranio_bound_shape)
 rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
 
 # Define model matrix
@@ -1493,6 +1477,133 @@ S_film <- S_film0[cols_film, cols_film]
 
 save(so_X_film, 
      file = here::here("intermediate", "design_matrix_interior.rData"))
+```
+
+It is useful to visualize these basis functions to understand the effect each has on predictions.
+
+```{r}
+#| label: basis fn viz
+
+# Link knots to interior basis functions
+so_grid_k %<>% mutate(basis_fn = cols_film)
+
+# Identify sample of interior knots to plot
+plot_knots <- cols_film[c(1:5, 
+                          (round(length(cols_film)/2) + c(-2:2)),
+                          ((length(cols_film) - 4):length(cols_film)))]
+
+### Link boundary points with nearest matrix point
+# Boundary is buffered 1 unit away from matrix; need to match it with real points
+
+# Convert boundary to sf for nearest neighbor matching
+bound_points <- cranio_bound_matrix %>% 
+  mutate(bound_r = 1:n()) %>% 
+  st_as_sf(coords = c("row", "col"), remove = F)
+
+# Convert points within matrix to sf for nearest neighbor
+matrix_sf <- so_matrix_pts %>% st_as_sf(coords = c("row", "col"), remove = F)
+
+# Identify nearest matrix neighbor to each boundary point
+bound_points %<>%
+  mutate(nearest_cell = st_nearest_feature(bound_points, matrix_sf)) %>% 
+  st_drop_geometry() %>% 
+  select(nearest_cell, bound_r)
+
+# Match matrix points to their order on the boundary
+matrix_pts_df <- so_matrix_pts %>%
+  mutate(cell_id = 1:n()) %>% 
+  left_join(bound_points,
+            by = c("cell_id" = "nearest_cell")) %>% 
+  # When we get multiple matches, take first point on boundary
+  arrange(cell_id, bound_r) %>% 
+  group_by(cell_id) %>% 
+  slice(1) %>% 
+  ungroup() %>% 
+  select(-cell_id)
+
+# Create data of basis functions and pixel locations for plotting
+basis_df <- cranio_soap$X %>% 
+  data.frame() %>% 
+  bind_cols(matrix_pts_df) %>% 
+  pivot_longer(-c(row, col, bound_r), 
+               names_to = "basis_fn") %>% 
+  mutate(basis_fn = as.numeric(str_remove(basis_fn, "X")),
+         fn_cat = case_when(basis_fn %in% cols_bound ~ "Boundary", 
+                            basis_fn %in% cols_film ~ "Interior"))
+
+# Plot boundary cyclic 1-dimensional splines
+soap_basis_cyclic <- ggplot(data = basis_df %>% 
+                              filter(!is.na(bound_r) & fn_cat == "Boundary")) +
+  geom_line(aes(x = bound_r, y = value, color = factor(basis_fn))) +
+  scale_color_brewer(palette = "Paired") +
+  labs(x = "Distance Along Boundary", 
+       y = "Function Value", 
+       color = "Basis Function",
+       title = "Boundary Cyclic Basis Functions") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+soap_basis_cyclic
+
+# Plot boundary-induced 2-dimensional basis functions
+soap_basis_bd <- ggplot() +
+  geom_raster(data = basis_df %>% filter(fn_cat == "Boundary"),
+              aes(x = row, y = col, fill = value)) +
+  scale_fill_viridis_c() +
+  labs(x = NULL, y = NULL, fill = "Fn. Value",
+       title = "Boundary Basis Functions") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~basis_fn)
+
+soap_basis_bd
+
+# Plot interior basis functions with corresponding knots
+soap_basis_int <- ggplot() +
+  geom_raster(data = basis_df %>% filter(basis_fn %in% plot_knots),
+              aes(x = row, y = col, fill = value)) +
+  geom_point(data = so_grid_k %>% select(-basis_fn), 
+             aes(x = row, y = col), 
+             color ="black", size = 0.01) +
+  geom_point(data = so_grid_k %>% filter(basis_fn %in% plot_knots), 
+             aes(x = row, y = col), 
+             color ="red", size = 0.01) +
+  scale_fill_viridis_c() +
+  labs(x = NULL, y = NULL, fill = "Fn. Value",
+       title = "Interior Basis Functions") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~basis_fn, ncol = 5)
+
+soap_basis_int
+```
+
+
+### Smoother Model Components {#sec-soap-film-components}
+
+Then, we estimate the coefficients for this model for patient $i$ using the closed-form expression
+
+$$
+\hatbgamma_i = (\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \bG
+$$
+
+We run a grid search to find the optimal smoothing penalty constants $\lambda_1$ and $\lambda_2$ (called "sp" in mgcv). We use the range $10^{-9}, ..., 10^{-2}$. We then select the model that achieves the minimum generalized cross-validation ("GCV") score:
+$$
+\begin{gather*}
+GCV = \frac{m \sum_{x,y} [G_i(x,y) - \hat{f_i}(x,y)]^2}{[m - tr(\bH)]^2} \\
+\bH = \bC (\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \\
+\tr(\bH) = \tr((\bC^\top \bC + \bS^{(\lambda)}_T)^{-1}\bC^\top \bC)
+\end{gather*}
+$$
+
+Last, we reshape our data to include one row for each patient, with a nested data set of row indices, column indices, and pointwise differences.
+
+```{r}
+#| label: soap film gcv constants
+
+rm(so_grid_k, so_matrix_pts); gc()
 
 # Define grid for penalty term optimization
 lambdas_film <- 10^(-7:-1)
@@ -1505,9 +1616,9 @@ lambdas_bound <- lambdas_film
 # First, only interior film
 so_constants_film <- tibble("sp" = lambdas_film) %>% 
   mutate(visor = map(sp,
-                     ~solve(t(so_X_film) %*% so_X_film + 
-                              .x * S_film) %*%
-                       t(so_X_film))) %>% 
+                     ~tcrossprod(solve(crossprod(so_X_film) + 
+                                         .x * S_film), 
+                                 so_X_film))) %>% 
   mutate(hat_trace = map_dbl(visor, ~sum(diag(.x %*% so_X_film))))
 
 # Next, boundary and interior
@@ -1515,9 +1626,9 @@ so_constants <- tibble(
   expand.grid("sp_film" = lambdas_film, "sp_bound" = lambdas_bound)
   ) %>% 
   mutate(visor = map2(sp_film, sp_bound,
-                      ~solve(t(so_X) %*% so_X +
-                               (.x * S_bound0 + .y * S_film0)) %*%
-                        t(so_X))) %>% 
+                      ~tcrossprod(solve(crossprod(so_X) +
+                               (.x * S_bound0 + .y * S_film0)),
+                               so_X))) %>% 
   mutate(hat_trace = map_dbl(visor, ~sum(diag(.x %*% so_X)))) %>% 
   mutate(constant_row = 1:n())
 
@@ -2079,35 +2190,35 @@ Next, we fit a model on one individual using a Gibbs sampler. Recall that we def
 $$
 \bS^{(\lambda)}_T =
 \begin{bmatrix}
-\lambda_b \bS_b & \bzero_{k_b \times k_f} \\
-\bzero_{k_f \times k_b} & \lambda_f \bS_f
+\lambda_b \bS_b & \bzero \\
+\bzero & \lambda_f \bS_f
 \end{bmatrix}.
 $$
 Note that neither $S_b$ nor $S_f$ are full-rank, but we can define the generalized inverse of $\bS^{(\lambda)}_T$ as
 $$
 \bS^{(\lambda) \ -}_T =
 \begin{bmatrix}
-\frac{1}{\lambda_b} \bS_b^- & \bzero_{k_b \times k_f} \\
-\bzero_{k_f \times k_b} & \frac{1}{\lambda_f} \bS_f^-
+\frac{1}{\lambda_b} \bS_b^- & \bzero\\
+\bzero & \frac{1}{\lambda_f} \bS_f^-
 \end{bmatrix}.
 $$
 This generalized inverse is not positive-definite, but we can use it in an improper prior.
 
 We also introduce the notation 
 $$
-\bbeta = \begin{pmatrix} \bbeta_{b \ [k_b \times 1]} \\ \bbeta_{f \ [k_f \times 1]} \end{pmatrix},
+\bgamma = \begin{pmatrix} \smash{\overbrace{\bgamma_{b}}^{k_b \times 1}} \\ \smash{\underbrace{\bgamma_{f}}_{k_f \times 1}} \end{pmatrix},
 $$
-where $\bbeta_b$ are the coefficients corresponding to the boundary spline and $\bbeta_f$ are the coefficients corresponding to the interior spline.
+where $\bgamma_b$ are the coefficients corresponding to the boundary spline and $\bgamma_f$ are the coefficients corresponding to the interior spline.
 
 Then we assume the (conjugate) priors:
 
 $$
 \begin{aligned}
-\bG_i(x,y) & \sim \mathrm{N}_m(\bC^\top \bgamma_i, \sigma^2 \bI_m) \\
-\bgamma_i & \sim \mathrm{N}_K(\bzero, \sigma^2 \bS^{(\lambda) \ -}_T) \\
-\sigma^2 & \sim \mathrm{Inv. Gamma}(a, b) \\
-\lambda_b & \sim \mathrm{Gamma}(c_b, d_b) \\
-\lambda_f & \sim \mathrm{Gamma}(c_f, d_f) \\
+\bG_i(x,y) & \sim \mathrm{N}_m ( \bC^\top \bgamma_i, \sigma^2 \bI_m) \\
+\bgamma_i & \sim \mathrm{N}_K \Big( \bzero, \sigma^2 \bS^{(\lambda) \ -}_T \Big) \\
+\sigma^2 & \sim \mathrm{Inv. Gamma} (a, b) \\
+\lambda_b & \sim \mathrm{Gamma} (c_b, d_b) \\
+\lambda_f & \sim \mathrm{Gamma} (c_f, d_f) \\
 \lambda_b & \perp \lambda_f
 \end{aligned}
 $$
@@ -2118,10 +2229,10 @@ These priors lead to the full conditionals:
 
 $$
 \begin{aligned} 
-\ [\lambda_b | \bbeta_b, \sigma^2] & \sim \mathrm{Gamma} \Bigg( \frac{k_b}{2} + c_b, \ \frac{1}{2 \sigma^2} \bbeta_b^\top S_b \bbeta_b + d_b \Bigg) \\
-[\lambda_f | \bbeta_f, \sigma^2] & \sim \mathrm{Gamma} \Bigg( \frac{k_f}{2} + c_f, \ \frac{1}{2 \sigma^2} \bbeta_f^\top S_f \bbeta_f + d_f \Bigg) \\
-[\sigma^2 | \bbeta, \lambda_b, \lambda_f] & \sim \mathrm{Inv. Gamma} \Bigg( \frac{m}{2} + \frac{K}{2} + a, \ \frac{1}{2} \Big[ \bG^\top \bG  - 2 \bbeta^\top \bC^\top \bG + \bbeta^\top \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big) \bbeta \Big] + b \Bigg) \\
-[\bbeta | \sigma^2, \lambda_b, \lambda_f] & \sim \mathrm{N}_K \Bigg( \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big)^{-1} \bC^\top \bG, \ \sigma^2 \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big)^{-1} \Bigg)
+\ [\lambda_b | \bgamma_b, \sigma^2] & \sim \mathrm{Gamma} \Bigg( \frac{k_b}{2} + c_b, \ \frac{1}{2 \sigma^2} \bgamma_b^\top S_b \bgamma_b + d_b \Bigg) \\
+[\lambda_f | \bgamma_f, \sigma^2] & \sim \mathrm{Gamma} \Bigg( \frac{k_f}{2} + c_f, \ \frac{1}{2 \sigma^2} \bgamma_f^\top S_f \bgamma_f + d_f \Bigg) \\
+[\sigma^2 | \bgamma, \lambda_b, \lambda_f] & \sim \mathrm{Inv. Gamma} \Bigg( \frac{m}{2} + \frac{K}{2} + a, \ \frac{1}{2} \Big[ \bG^\top \bG  - 2 \bgamma^\top \bC^\top \bG + \bgamma^\top \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big) \bgamma \Big] + b \Bigg) \\
+[\bgamma | \sigma^2, \lambda_b, \lambda_f] & \sim \mathrm{N}_K \Bigg( \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big)^{-1} \bC^\top \bG, \ \sigma^2 \Big( \bC^\top \bC + \bS^{(\lambda)}_T \Big)^{-1} \Bigg)
 \end{aligned}
 $$
 
@@ -2143,6 +2254,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
   time_pts <- c("start" = time_check)
   timer <- c("setup" = 0,
              "lambda_s" = 0,
+             "beta_update_c" = 0,
              "x_inverse" = 0,
              "beta_moments" = 0,
              "beta_draw" = 0,
@@ -2215,7 +2327,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     # Full penalty matrix including lambdas
     lambda_S_list <- map2(lambda, S,
                           function(l_const, s_mx){
-                            l * s_mx
+                            l_const * s_mx
                           })
     
     lambda_S <- Reduce("+", lambda_S_list)
@@ -2224,8 +2336,23 @@ Gibbs.Pen.Lin.Reg_FN <- function(
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
     
+    # Call to Cpp function for beta update
+    beta_updated <- penalized_beta_update(
+      y = y, X = X, lambda_S = lambda_S, sigmasq = sigmasq
+    )
+    
+    xtx_plus_pen_C <- beta_updated[["xtx_pen"]]
+    
+    beta_ex_C <- beta_updated[["coeff_mean"]]
+    
+    beta_var_C <- beta_updated[["coeff_var"]]
+    
+    timer["beta_update_c"] <- timer["beta_update_c"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
+    
     # Matrix needed for both moments
-    xtx_plus_pen <- t(X) %*% X + lambda_S
+    xtx_plus_pen <- crossprod(X) + lambda_S
     beta_helper <- solve(xtx_plus_pen)
     
     timer["x_inverse"] <- timer["x_inverse"] + 
@@ -2233,7 +2360,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     time_check <- Sys.time()
     
     # Posterior conditional expectation
-    beta_ex <- beta_helper %*% t(X) %*% y
+    beta_ex <- tcrossprod(beta_helper, X) %*% y
     
     # Posterior conditional variance
     beta_var <- sigmasq * beta_helper
@@ -2241,6 +2368,10 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     timer["beta_moments"] <- timer["beta_moments"] + 
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
+    
+    print(sum(xtx_plus_pen - xtx_plus_pen_C))
+    print(sum(beta_ex - beta_ex_C))
+    print(sum(beta_var - beta_var_C))
     
     # Generate new beta sample
     beta <- rmvnorm(n = 1, beta_ex, beta_var) %>% t()
@@ -2253,8 +2384,8 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     
     # 2nd parameter of inverse gamma
     b_post <- 
-      b_pri - t(y) %*% X %*% beta + 
-      0.5 * (sum(y^2) + t(beta) %*% xtx_plus_pen %*% beta)
+      b_pri - crossprod(y, X) %*% beta + 
+      0.5 * (sum(y^2) + crossprod(beta, xtx_plus_pen) %*% beta)
     
     # Generate new sigma squared sample
     precision <- rgamma(1, a_post, b_post)
@@ -2268,7 +2399,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     
     d_post <- map(S,
                   function(S_j){
-                    (1 / (2 * sigmasq)) * t(beta) %*% S_j %*% beta + d_pri
+                    (1 / (2 * sigmasq)) * crossprod(beta, S_j) %*% beta + d_pri
                   })
                     
     lambda <- map2_dbl(c_post, d_post,
@@ -2328,7 +2459,7 @@ S_mx <- cranio_soap$S
 
 # Set default parameters
 def_pars <- c(
-  "sigma_sq" = var(y_mx)[1,1],
+  "sigma_sq" = var(y_mx),
   "lambda" = 0.1,
   "a" = 1,
   "b" = 1,
@@ -2337,7 +2468,7 @@ def_pars <- c(
 )
 
 # Set iterations
-bayes_soap_iters <- 1e3
+bayes_soap_iters <- 1e2
 
 # Run function
 soap_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
