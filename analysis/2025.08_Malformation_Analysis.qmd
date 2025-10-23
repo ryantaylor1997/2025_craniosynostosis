@@ -156,19 +156,13 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Fit Bayesian soap film smoother on one individual patient (@sec-bayes-individual)
--   Wrote out assumptions for Bayesian model (@sec-bayes-soap)
--   Plotted posterior mean predictions from this Bayesian model (@sec-bayes-soap-plot)
--   Made trace plots of posterior and burn-in period, which show relatively fast convergence of the parameters (@sec-mcmc-diagnostics)
--   Added timing to track how long each part of the Gibbs sampler takes (@sec-mcmc-diagnostics)
--   Changed calculation for $\sigma^2$ in the Gibbs sampler to try to speed up that step *(not sure this worked)* (@sec-bayes-individual)
--   Changed notation changed for Bayesian models and earlier soap film descriptions to clear the way for multiple individuals / hierarchical data (@sec-soap-film-components)
-- Compared plots of (GCV-optimized) predictions based on only interior spline, only boundary spline, and both (@sec-soap-map); investigated the boundary splines
+-   Added plots to visualize the individual soap film basis functions (@sec-soap-basis-fns)
+-   Wrote a C++ version of the beta update, then updated it to modify beta moments in place
+-   Added timing of the C++ beta update in the MCMC loop (@sec-mcmc-diagnostics)
 
 ## Questions
 
--   Is my notation consistent with the grant?
--   Should variable names in my code be consistent with notation? (e.g. right now I'm using X in the code for the design matrix but C in notation).
+-   How much of the MCMC will be moved to Cpp?
 
 ## Collaborator Questions
 
@@ -1479,6 +1473,8 @@ save(so_X_film,
      file = here::here("intermediate", "design_matrix_interior.rData"))
 ```
 
+### Soap Film Basis Functions {#sec-soap-basis-fns}
+
 It is useful to visualize these basis functions to understand the effect each has on predictions.
 
 ```{r}
@@ -1541,7 +1537,8 @@ soap_basis_cyclic <- ggplot(data = basis_df %>%
        color = "Basis Function",
        title = "Boundary Cyclic Basis Functions") +
   theme_minimal() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(nrow = 2, byrow = T))
 
 soap_basis_cyclic
 
@@ -2244,7 +2241,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     # Note: uses one distribution for all lambdas
     y, X, # Data
     S, # Penalty matrices
-    sigmasq0, lambda0, # Default parameters
+    sigmasq0, lambda0, beta0, # Default parameters
     a_pri, b_pri, c_pri, d_pri, # Prior hyperparameters
     iters = 1e4, burn_pct = 0.1 # MCMC parameters
 ){
@@ -2260,7 +2257,6 @@ Gibbs.Pen.Lin.Reg_FN <- function(
              "beta_draw" = 0,
              "sigma2_update" = 0,
              "lambdas_update" = 0)
-  
   
   ### Reformat penalty matrix
   if(is.matrix(S)){ S <- list(S) }
@@ -2293,7 +2289,13 @@ Gibbs.Pen.Lin.Reg_FN <- function(
   
   # Assign initial values
   sigmasq <- sigmasq0
-  lambda <- rep(lambda0, pen_J)
+  lambda <- rep_len(lambda0, pen_J)
+  beta <- rep_len(beta0, K)
+  
+  # Initialize beta moments before update
+  beta_expect <- beta
+  beta_var <- diag(K)
+  xtx_plus_pen <- diag(K)
   
   # Compute hyperparameters that don't update
   a_post <- N/2 + K/2 + a_pri
@@ -2336,16 +2338,27 @@ Gibbs.Pen.Lin.Reg_FN <- function(
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
     
+    # Save current versions so we can check if functions get updated
+    xtx_plus_pen_old <- as.vector(xtx_plus_pen)
+    
+    beta_expect_old <- as.vector(beta_expect)
+    
+    beta_var_old <- as.vector(beta_var)
+    
     # Call to Cpp function for beta update
-    beta_updated <- penalized_beta_update(
-      y = y, X = X, lambda_S = lambda_S, sigmasq = sigmasq
+    penalized_beta_inplace(
+      y = y, X = X, lambda_S = lambda_S, sigmasq = sigmasq,
+      beta_expect, 
+      beta_var, 
+      xtx_plus_pen
     )
     
-    xtx_plus_pen_C <- beta_updated[["xtx_pen"]]
+    # Save current versions so we can compare R vs. Cpp
+    xtx_plus_pen_C <- as.vector(xtx_plus_pen)
     
-    beta_ex_C <- beta_updated[["coeff_mean"]]
+    beta_expect_C <- as.vector(beta_expect)
     
-    beta_var_C <- beta_updated[["coeff_var"]]
+    beta_var_C <- as.vector(beta_var)
     
     timer["beta_update_c"] <- timer["beta_update_c"] + 
       difftime(Sys.time(), time_check, units = "secs")
@@ -2360,7 +2373,7 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     time_check <- Sys.time()
     
     # Posterior conditional expectation
-    beta_ex <- tcrossprod(beta_helper, X) %*% y
+    beta_expect <- tcrossprod(beta_helper, X) %*% y
     
     # Posterior conditional variance
     beta_var <- sigmasq * beta_helper
@@ -2369,12 +2382,16 @@ Gibbs.Pen.Lin.Reg_FN <- function(
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
     
-    print(sum(xtx_plus_pen - xtx_plus_pen_C))
-    print(sum(beta_ex - beta_ex_C))
-    print(sum(beta_var - beta_var_C))
+    cat("xtx_pen in-place max diff:", max(abs(xtx_plus_pen_C - xtx_plus_pen_old)), "\n")
+    cat("expect in-place max diff:", max(abs(beta_expect_C - beta_expect_old)), "\n")
+    cat("var in-place max diff:", max(abs(beta_var_C - beta_var_old)), "\n")
+    
+    cat("xtx_pen R-C max diff:", max(abs(as.vector(xtx_plus_pen) - xtx_plus_pen_C)), "\n")
+    cat("expect R-C max diff:", max(abs(as.vector(beta_expect) - beta_expect_C)), "\n")
+    cat("var R-C max diff:", max(abs(as.vector(beta_var) - beta_var_C)), "\n")
     
     # Generate new beta sample
-    beta <- rmvnorm(n = 1, beta_ex, beta_var) %>% t()
+    beta <- rmvnorm(n = 1, beta_expect, beta_var) %>% t()
     
     timer["beta_draw"] <- timer["beta_draw"] + 
       difftime(Sys.time(), time_check, units = "secs")
@@ -2459,20 +2476,22 @@ S_mx <- cranio_soap$S
 
 # Set default parameters
 def_pars <- c(
+  "beta" = 0.0,
   "sigma_sq" = var(y_mx),
   "lambda" = 0.1,
-  "a" = 1,
-  "b" = 1,
-  "c" = 1,
-  "d" = 1
+  "a" = 1.0,
+  "b" = 1.0,
+  "c" = 1.0,
+  "d" = 1.0
 )
 
 # Set iterations
-bayes_soap_iters <- 1e2
+bayes_soap_iters <- 1e1
 
 # Run function
 soap_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
   y = y_mx, X = so_X, S = S_mx,
+  beta0 = def_pars["beta"], 
   sigmasq0 = def_pars["sigma_sq"], 
   lambda0 = def_pars["lambda"], 
   a_pri = def_pars["a"],
