@@ -2339,11 +2339,11 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     time_check <- Sys.time()
     
     # Save current versions so we can check if functions get updated
-    xtx_plus_pen_old <- as.vector(xtx_plus_pen)
+    xtx_plus_pen_old <- xtx_plus_pen * 1.0
     
-    beta_expect_old <- as.vector(beta_expect)
+    beta_expect_old <- beta_expect * 1.0
     
-    beta_var_old <- as.vector(beta_var)
+    beta_var_old <- beta_var * 1.0
     
     # Call to Cpp function for beta update
     penalized_beta_inplace(
@@ -2354,11 +2354,11 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     )
     
     # Save current versions so we can compare R vs. Cpp
-    xtx_plus_pen_C <- as.vector(xtx_plus_pen)
+    xtx_plus_pen_C <- xtx_plus_pen
     
-    beta_expect_C <- as.vector(beta_expect)
+    beta_expect_C <- beta_expect
     
-    beta_var_C <- as.vector(beta_var)
+    beta_var_C <- beta_var
     
     timer["beta_update_c"] <- timer["beta_update_c"] + 
       difftime(Sys.time(), time_check, units = "secs")
@@ -2386,12 +2386,12 @@ Gibbs.Pen.Lin.Reg_FN <- function(
     cat("expect in-place max diff:", max(abs(beta_expect_C - beta_expect_old)), "\n")
     cat("var in-place max diff:", max(abs(beta_var_C - beta_var_old)), "\n")
     
-    cat("xtx_pen R-C max diff:", max(abs(as.vector(xtx_plus_pen) - xtx_plus_pen_C)), "\n")
-    cat("expect R-C max diff:", max(abs(as.vector(beta_expect) - beta_expect_C)), "\n")
-    cat("var R-C max diff:", max(abs(as.vector(beta_var) - beta_var_C)), "\n")
+    cat("xtx_pen R-C max diff:", max(abs(xtx_plus_pen - xtx_plus_pen_C)), "\n")
+    cat("expect R-C max diff:", max(abs(beta_expect - beta_expect_C)), "\n")
+    cat("var R-C max diff:", max(abs(beta_var - beta_var_C)), "\n")
     
     # Generate new beta sample
-    beta <- rmvnorm(n = 1, beta_expect, beta_var) %>% t()
+    beta <- t(rmvnorm(n = 1, beta_expect, beta_var))
     
     timer["beta_draw"] <- timer["beta_draw"] + 
       difftime(Sys.time(), time_check, units = "secs")
