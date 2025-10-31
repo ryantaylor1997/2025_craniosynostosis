@@ -2668,7 +2668,7 @@ knots_per_fusion <- 10
 # Generate separate smooth for each fusion type, with constraint
 cranio_coeff_smooth <- smoothCon(
   s(age, by = fusion_type, bs = "cr", k = knots_per_fusion),
-  data = cranio_sub, absorb.cons = T
+  data = cranio_sub, absorb.cons = T, apply.by = FALSE
 )
 
 # Identify names of each smooth
@@ -2677,77 +2677,31 @@ names(cranio_coeff_smooth) <- map_chr(cranio_coeff_smooth,
 
 ### Create design matrix
 
-# Extract individual smooth design matrices
+## Extract individual smooth design matrices
 fusion_mxs <- map(cranio_coeff_smooth, ~.$X)
 
-# For our specific case, right coronal and left coronal splines should be estimated on bicoronal patients
+## Make specific edits for our case
+
+# Right and left coronal splines include bicoronal patients
 fusion_mxs[["Right Coronal"]] <- fusion_mxs[["Right Coronal"]] + fusion_mxs[["Bicoronal"]]
 fusion_mxs[["Left Coronal"]] <- fusion_mxs[["Left Coronal"]] + fusion_mxs[["Bicoronal"]]
 
-## Create basis matrices for each fusion
-fusion_mxs <- map(
-  names(sub_fusions %>% select(matches("fused"))),
-  function(col_nm){
-    # One matrix to set rows to 0 if this fusion is not present
-    indicator_matrix <- matrix(rep.int(sub_fusions[[col_nm]], 
-                                       (knots_per_fusion - 1)),
-                               byrow = F, ncol = knots_per_fusion - 1)
-
-    # Elementwise multiply above matrix by design matrix
-    design_matrix <- indicator_matrix * cranio_coeff_smooth$X
-
-    return(list(design_matrix, indicator_matrix))
-  }
-)
-
-# Keep design matrices
-coeff_splines <- map(fusion_mxs, ~.[[1]])
-
-# Keep indicator matrices for later demeaning
-coeff_inds <- map(fusion_mxs, ~.[[2]])
+# We do not want a Normative matrix; we want a reference spline (X0)
+fusion_mxs[["Normative"]] <- NULL
 
 ## Merge with original spline basis
 coeff_spline_x <- Reduce(
-  cbind, x = coeff_splines, init = cranio_coeff_smooth$X
+  cbind, x = fusion_mxs, init = cranio_coeff_smooth[["Sagittal"]]$X0
 )
 
-# Create indicator matrix of the same shape
-cranio_coeff_spline_inds <- Reduce(
-  cbind, x = coeff_inds,
-  init = matrix(1,
-                nrow = nrow(cranio_coeff_smooth$X),
-                ncol = ncol(cranio_coeff_smooth$X))
-)
-
-# ## Subtract column means to deal with identifiability
-# 
-# # Take sums of each column
-# coeff_spline_sums <- colSums(coeff_spline_x)
-# 
-# # Count non-zero remaining entries
-# coeff_spline_ns <- colSums(coeff_spline_inds)
-# 
-# # Divide sum by count of non-zeros
-# coeff_spline_means <- coeff_spline_sums / coeff_spline_ns
-# 
-# coeff_spline_means <- if_else(abs(coeff_spline_means) < 1e-10, 
-#                               0, coeff_spline_means)
-# 
-# # Subtract new column means from non-zero entries
-# coeff_spline_demeaned <- sweep(x = coeff_spline_x, 
-#                                MARGIN = 2, 
-#                                STATS = coeff_spline_means,
-#                                FUN = function(mx, mn){
-#                                  ifelse(mx == 0, 0, mx - mn)
-#                                })
-
-## Merge parameteric covariates
+## Create parameteric covariates
 design_param <- cbind(
   rep(1, nrow(cranio_sub)),
   (as.numeric(cranio_sub$sex) - 1)
 )
 
-cranio_coeff_X <- cbind(design_param, coeff_spline_x) #coeff_spline_demeaned
+# Merge with spline matrix for full design matrix
+cranio_coeff_X <- cbind(design_param, coeff_spline_x)
 
 ### Create penalty matrices
 
@@ -2774,7 +2728,7 @@ cranio_coeff_S <- map(
     max_col <- S_col_indices$max[col_index]
     
     x <- coeff_S_base
-    x[min_col:max_col, min_col:max_col] <- cranio_coeff_smooth$S[[1]]
+    x[min_col:max_col, min_col:max_col] <- cranio_coeff_smooth[[1]]$S[[1]]
     
     x
   }
@@ -2917,46 +2871,15 @@ beta_trace_coeff
 
 ### Create new data
 
-## Identify representative sample ages
+## Create data shell
 
-# Generate an even sequence of row indices 1:n
-data_sample_is <- round(seq(from = 1, to = nrow(cranio_sub),
-                             length.out = 100))
+coeff_newdata_demo <- tibble(
+  fusion_type = unique(cranio_sub$fusion_type),
+  age = list(seq(min(cranio_sub$age), max(cranio_sub$age), length.out = 100))
+  
+)
 
-# Compile evenly spaced age points from this set of indices
-age_sample_pts <- sort(cranio_sub$age)[data_sample_is]
-
-# Identify which rows in the data make up this age sample
-newdata_sample_rows <- cranio_sub %>% 
-  mutate(row = 1:n()) %>% 
-  filter(age %in% age_sample_pts) %>%
-  group_by(age) %>% 
-  slice(1) %>% 
-  ungroup() %$% 
-  unique(row)
-
-## Use these sample rows to construct new data
-
-# Select which rows from smooth matrix will be used for predictions
-coeff_newdata_base <- cranio_coeff_smooth$X[newdata_sample_rows,]
-
-# Identify unique combinations of several smooths
-coeff_inds_unique <- cranio_coeff_spline_inds %>% 
-  as.data.frame() %>% 
-  bind_cols(fusion_type = cranio_sub$fusion_type) %>% 
-  arrange(fusion_type) %>% 
-  group_by(fusion_type) %>% 
-  slice(1) %>% 
-  ungroup()
-
-# Create indicators for where each smooth should be included in newdata
-coeff_newdata_inds <- coeff_inds_unique[rep(1:nrow(coeff_inds_unique), 
-                                            each = nrow(coeff_newdata_base)),]
-
-coeff_newdata <- coeff_newdata_inds %>% 
-  mutate(age = rep_len(age_sample_pts, nrow(coeff_newdata_inds)),
-         intercept = 1,
-         sex = 0)
+coeff_newdata <- 
 
 # Extract posterior mean coefficients
 coeff_bayes1_betas <- colMeans(coeff_bayes1$beta)
