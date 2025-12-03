@@ -38,6 +38,8 @@ $$
 \newcommand{\bG}{\mathbf G}
 \newcommand{\bg}{\mathbf g}
 \newcommand{\bS}{\mathbf S}
+\newcommand{\bs}{\mathbf s}
+\newcommand{\bP}{\mathbf P}
 \newcommand{\bC}{\mathbf C}
 \newcommand{\bI}{\mathbf I}
 \newcommand{\hatbG}{\widehat \bG}
@@ -45,6 +47,7 @@ $$
 \newcommand{\bz}{\mathbf z}
 \newcommand{\bb}{\mathbf b}
 \newcommand{\bB}{\mathbf B}
+\newcommand{\bw}{\mathbf w}
 
 \newcommand{\balpha}{\boldsymbol{\alpha}}
 \newcommand{\bbeta}{\boldsymbol{\beta}}
@@ -110,9 +113,9 @@ pacman::p_load(
 library(DevCranio)
 
 # Define function for predicting GAM on new data (in homage to get_predictions)
-GetPredictions_FN <- function(model, newdata, 
-                              rm_effects = c("~"), # By default match nothing; assume no variable includes tilde
-                              ci_crit = 1.96){
+obtain_predictions <- function(model, newdata, 
+                               rm_effects = c("~"), # By default match nothing; assume no variable includes tilde
+                               ci_crit = 1.96){
   
   x <- newdata
   
@@ -153,7 +156,7 @@ DO_PRELIM_MODEL_FUSION <- F
 DO_INDIV_SOAPS <- F
 
 # Set constants
-RM_IGNORE <- "DO|FN|IGNORE|FOLDER|cranio|_dict|so_"
+RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
 ```
 
 # Overview
@@ -447,7 +450,8 @@ Next, we load the malformation maps into one data set. Each malformation map is 
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 
@@ -669,7 +673,8 @@ Next, we summarize the growth by suture fusion and plot these averages on the br
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -919,7 +924,8 @@ $$
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -1086,7 +1092,7 @@ model_region_smooth <- region_models %>%
   # Add predictions from smooth term
   mutate(smooth_pred = map(
     model, 
-    ~GetPredictions_FN(
+    ~obtain_predictions(
       model = .x, newdata = newdata_cranio_age))) %>% 
   select(-model) %>% 
   unnest(smooth_pred)
@@ -1157,7 +1163,8 @@ $$
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -1220,7 +1227,7 @@ if(DO_PRELIM_MODEL_PIXEL){
     # Add plot of smoothed term
     mutate(smooth_pred = map(
       model, 
-      ~GetPredictions_FN(
+      ~obtain_predictions(
         model = .x, newdata = newdata_cranio_age))) %>% 
     select(-model) %>% 
     unnest(smooth_pred)
@@ -1282,7 +1289,8 @@ Predictions from this model are shown below. In order to show how this model is 
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -1331,7 +1339,7 @@ fusion_models  %<>%
   # Predict from this model for spatial pattern (1 year old male)
   mutate(pred_data = map(
     model,
-    ~GetPredictions_FN(.x, newdata = newdata_fusiongam)))
+    ~obtain_predictions(.x, newdata = newdata_fusiongam)))
 
 # Flatten predictions into their own data
 fusion_model_summ <- fusion_models %>% 
@@ -1368,7 +1376,7 @@ model_fusion_smooth <- fusion_models %>%
   # Add plot of smoothed term
   mutate(smooth_pred = map(
     model, 
-    ~GetPredictions_FN(.x, 
+    ~obtain_predictions(.x, 
                        newdata = newdata_age_gam,
                        rm_effects = c("row", "col")))) %>% 
   select(-model) %>% 
@@ -1514,7 +1522,8 @@ $$
 
 # Clear memory space
 rm(cranio_bound_shape)
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -1799,7 +1808,8 @@ so_diff_range <- (
 
 # Clear memory space
 rm(cranio_matrix, newdata_cranio_age)
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ## Model Fitting without Boundary
@@ -1920,7 +1930,8 @@ Next, we try to replicate this process by nesting everything within a dataset.
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -1990,7 +2001,8 @@ To test the model fit process, we take a subset of the data, only keeping the fi
 
 # Clear memory space
 rm(list = ls(pattern = "_film"))
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -2114,7 +2126,8 @@ Next, we replicate this process by nesting everything within a dataset.
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -2242,7 +2255,8 @@ Once we have set up the soap film model, we estimate coefficients for each indiv
 
 # Clear memory space
 rm(so_test_df)
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -2307,7 +2321,8 @@ We create a dataset containing only the demographics and estimated coefficients 
 
 # Clear memory space
 rm(so_constants)
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ```{r}
@@ -2394,7 +2409,7 @@ $$
 #| label: bayesian-regression-function
 
 ### Write Gibbs sampler for Bayesian linear regression
-Gibbs.Pen.Lin.Reg_FN <- function(
+lm_penalized_gibbs <- function(
     # Note: uses one distribution for all lambdas
     y, X, # Data
     S, # Penalty matrices
@@ -2605,7 +2620,7 @@ def_pars <- c(
 bayes_soap_iters <- 1e3
 
 # Run function
-soap_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
+soap_bayes1 <- lm_penalized_gibbs(
   y = y_mx, X = so_X, S = S_mx,
   beta0 = def_pars["beta"], 
   sigmasq0 = def_pars["sigma_sq"], 
@@ -2680,16 +2695,15 @@ soap_bayes1_tr %<>% bind_rows(trace_default)
 sigma_trace <- ggplot(soap_bayes1_tr %>% 
                         filter(str_detect(name, "sigma_sq"))) +
   geom_line(aes(x = iter, y = value)) +
-  facet_wrap(~draw_cat, nrow = 1, scales = "free")
+  facet_grid(name ~ draw_cat, scales = "free")
 
 sigma_trace
 
 # Trace plot of lambdas
 lambda_trace <- ggplot(soap_bayes1_tr %>% 
                          filter(str_detect(name, "lambda"))) +
-  geom_line(aes(x = iter, y = value, color = name), alpha = 0.5) +
-  scale_color_viridis_d(option = "cividis") +
-  facet_wrap(~draw_cat, nrow = 1, scales = "free") +
+  geom_line(aes(x = iter, y = value), alpha = 0.5) +
+  facet_grid(name ~ draw_cat, scales = "free") +
   theme(legend.position = "bottom")
 
 lambda_trace
@@ -2697,11 +2711,9 @@ lambda_trace
 # Trace plot of betas
 beta_trace <- ggplot(soap_bayes1_tr %>% 
                          filter(str_detect(name, "beta"))) +
-  geom_line(aes(x = iter, y = value, color = name), alpha = 0.5) +
-  scale_color_viridis_d(option = "cividis") +
+  geom_line(aes(x = iter, y = value), alpha = 0.5) +
   theme(legend.position = "bottom") +
-  facet_wrap(~draw_cat, nrow = 1, scales = "free_x") +
-  guides(color = "none")
+  facet_grid(name ~ draw_cat, scales = "free")
 
 beta_trace
 ```
@@ -2824,6 +2836,9 @@ cranio_coeff_smooth <- smooth.construct2(
   s(age, bs = "cr", k = knots_per_fusion),
   data = cranio_coeff_df, knots = NULL
 )
+
+# Attach name of the dataset to this smooth
+attr(cranio_coeff_smooth, "data") <- "cranio_coeff_df"
 ```
 
 Second, we write a function that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
@@ -2831,108 +2846,141 @@ Second, we write a function that takes this smooth object, data, the name of the
 ```{r}
 #| label: coefficient-design-matrix
 
-### Write function to set up design matrix:
-## - Given a smooth, factor variable, and data, 
-## .. apply identifiability constraints (sum to zero and remove last column)
+### Write functions to set up design matrix 
+##  - Given a constructed smooth (with constraint applied), factor variable, and new data:
 ## .. and generate full design matrix for new data,
-## .. assuming "effects coding" with reference spline and difference functions
+## .. assuming "reference coding" with reference spline and difference functions
 
-Additive.Effects.Matrix_FN <- function(sm, newdata, 
-                                       by.var, param.vars, 
-                                       do.penalty = TRUE){
-  
+## 1) Given smooth, subtract column means and drop last column
+apply_sweep_and_drop <- function(sm, drop_col = NULL, newdata = NULL){
+
   # Extract design matrix
   sm_X0 <- sm$X
-  
-  data_X0 <- PredictMat(sm, data = newdata)
-  
-  ## 1) apply identifiability constraint
-  
-  # - Our constraint: subtract column means and remove last column
-  
+
   # Calculate column means
   sm_means <- colMeans(sm_X0)
-  
+
   # Identify number of columns
   sm_k <- length(sm_means)
   
-  # Repeat means, n times, to be same shape as new data X
-  sm_mean_mx <- matrix(
-    rep(sm_means, nrow(data_X0)),
-    ncol = sm_k, byrow = T
-  )
+  # Determine whether column to drop is provided
+  if(is.null(drop_col)) drop_col <- sm_k
   
+  # Determine whether to sweep and drop from original or new matrix
+  if(is.null(newdata)){
+    nd_X0 <- sm_X0
+  } else {
+    nd_X0 <- PredictMat(sm, data = newdata)
+  }
+
   # Subtract these from design matrix AND remove last column
-  X_ref <- data_X0[, -sm_k] - sm_mean_mx[, -sm_k]
+  X_ref <- sweep(nd_X0[, -drop_col], 2, STATS = as.array(sm_means[-drop_col]))
+
+  # Locate full penalty matrix
+  sm_S0 <- sm$S[[1]]
+
+  # Filter to subset corresponding to remaining design matrix
+  S_ref <- sm_S0[-drop_col, -drop_col]
+
+  # Export
+  out <- list("X" = X_ref,
+              "S" = S_ref,
+              "means" = sm_means,
+              "col_dropped" = drop_col)
+
+  out
+}
+
+## 2) Given constructed smooth and a factor, make full design and penalty
+##    - assume "reference" coding for splines
+make_reference_coded_splines <- function(sm, drop_col = NULL, newdata = NULL, 
+                                         by_var){
   
-  ## 2) separate by factors
+  # Apply constraint to smooth object
+  constrained_list <- apply_sweep_and_drop(sm = sm, 
+                                           drop_col = drop_col, 
+                                           newdata = newdata)
+  
+  # Get data with factor variable: either from the smooth or a new data frame
+  if(is.null(newdata)){
+    nd <- get(attr(sm, "data"))
+  } else {
+    nd <- newdata
+  }
   
   # Define vector of factor assignments in data
-  by_vec <- newdata[[by.var]]
+  by_vec <- nd[[by_var]]
   
   # Define list of effect values for which we need separate splines
   by_effects <- levels(by_vec)[-1]
   
-  # Determine total number of splines we'll have
-  num_splines <- length(by_effects) + 1
-  
   # Generate one design matrix for each effect
   X_by <- map(by_effects, 
-              ~ as.numeric(by_vec == .x) * X_ref)
+              ~ as.numeric(by_vec == .x) * constrained_list$X)
   
   # Merge with original spline basis
-  X_splines <- Reduce(cbind, x = X_by, init = X_ref)
+  X_splines <- Reduce(cbind, x = X_by, init = constrained_list$X)
   
-  ## 3) create parametric covariates
+  out <- list("X" = X_splines)
   
-  # Define formula based on parametric names provided
-  param_formula <- as.formula(paste("~", 
-                                    paste(param.vars, collapse = " + ")))
-  
-  # Create matrix columns from this formula
-  design_param <- model.matrix(param_formula, newdata)
-  names(design_param) <- NULL
-  
-  # Merge with spline matrix for full design matrix
-  X_design <- cbind(design_param, X_splines)
-  
-  out <- list("X" = X_design)
-  
-  ### 4) create penalty matrices
-  
-  if(do.penalty){
-    
-    ## Construct penalized part of matrix
-    
-    # Locate full penalty matrix
-    sm_S0 <- sm$S[[1]]
-    
-    # Filter to subset corresponding to remaining design matrix
-    S_root <- sm_S0[-sm_k, -sm_k]
-    
-    ## Compose penalties for all spline coefficients together
-    
+  # Construct penalty matrix for all splines together
+  if(is.null(newdata)){
     # Define indicator matrix list 
     # Each matrix is 0 except for a 1 on the diagonal
     # This 1 represents the block where the penalty matrix S is
-    spline_indicator_list <- map(1:num_splines,
-                                 .f = function(j, z = rep(0, num_splines)){
+    spline_indicator_list <- map(1:length(levels(by_vec)),
+                                 .f = function(j, z = rep(0, length(levels(by_vec)))){
                                    z[j] <- 1
                                    diag(z, nrow = length(z))
                                  })
     
     # For each matrix in the list, take kronecker product with S from the smooth
     S_splines <- map(spline_indicator_list,
-                     ~kronecker(.x, S_root))
+                     ~kronecker(.x, constrained_list$S))
     
-    ## Compose unpenalized part of coefficients
-    S_unpenal <- diag(0, nrow = ncol(design_param))
-    
-    # Add S penalty matrix to 1 corresponding column range for each item in the list
-    S_full <- map(S_splines, ~as.matrix(bdiag(S_unpenal, .x)))
-    
-    out[["S"]] <- S_full
+    out[["S"]] <- S_splines
   }
+  out
+}
+
+## 3) Add parametric covariates
+setup_reference_model <- function(sm, drop_col = NULL, by_var, newdata = NULL, 
+                                  param_formula = NULL){
+  
+  # Make spline matrix
+  ref_splines <- make_reference_coded_splines(sm = sm, drop_col = drop_col, 
+                                              by_var = by_var, newdata = newdata)
+  
+  # If there is no parametric formula, add unpenalized intercept
+  if(is.null(param_formula)){
+    design_param <- matrix(1, nrow = nrow(ref_splines$X))
+    
+    S_unpenal <- matrix(0, 1, 1)
+  } else{
+    # Otherwise, create matrix columns from formula
+    
+    # Get data with parametric variables: if no new data, get it from smooth
+    if(is.null(newdata)){ 
+      nd <- get(attr(sm, "data")) 
+    } else {
+      nd <- newdata
+    }
+    
+    design_param <- model.matrix(param_formula, nd)
+    colnames(design_param) <- NULL
+    
+    S_unpenal <- matrix(0, ncol(design_param), ncol(design_param))
+  }
+  
+  # Merge with spline matrix for full design matrix
+  X_design <- cbind(design_param, ref_splines$X)
+  
+  S_full <- map(ref_splines$S, ~as.matrix(bdiag(S_unpenal, .x)))
+  
+  out <- list("X" = X_design)
+  
+  if(is.null(newdata)){ out[["S"]] <- S_full }
+  
   out
 }
 ```
@@ -2941,7 +2989,8 @@ Additive.Effects.Matrix_FN <- function(sm, newdata,
 #| results: hide
 
 # Clear memory space
-rm(list = setdiff(ls(), ls(pattern = eval(RM_IGNORE)))); gc(verbose = F)
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 ```
 
 ## Single Basis Coefficient Bayesian Additive Model {#sec-coeff-gibbs}
@@ -2958,9 +3007,9 @@ To test this model, we use the 38th soap film basis coefficient. This coefficien
 ### Run Gibbs sampler for coefficient models
 
 ## Create design and penalty matrices using function above
-coeff_ingredients <- Additive.Effects.Matrix_FN(
-  sm = cranio_coeff_smooth, newdata = cranio_coeff_df,
-  by.var = "fusion_type", param.vars = "sex"
+coeff_ingredients <- setup_reference_model(
+  sm = cranio_coeff_smooth,
+  by_var = "fusion_type", param_formula = ~sex
 )
 
 # Set 1 covariate as outcome 
@@ -2979,10 +3028,10 @@ def_pars_coeff <- c(
 )
 
 # Set iterations
-bayes_coeff_iters <- 1e3
+bayes_coeff_iters <- 1e4
 
 # Run function
-coeff_bayes1 <- Gibbs.Pen.Lin.Reg_FN(
+coeff_bayes1 <- lm_penalized_gibbs(
   y = coeff_y, X = coeff_ingredients$X, S = coeff_ingredients$S,
   beta0 = def_pars_coeff["beta"], 
   sigmasq0 = def_pars_coeff["sigma_sq"], 
@@ -3038,13 +3087,14 @@ coeff_bayes1_tr <- imap(
   unname() %>% 
   list_rbind() %>% 
   mutate(draw_cat = if_else(draw == "burn_", 
-                            "Burn-In", "Posterior"))
+                            "Burn-In", "Posterior"),
+         param_num = as.numeric(str_extract(name, "[0-9]+"))) %>% 
+  mutate(param_num = coalesce(param_num, 1))
 
 # Add default parameters to this table
 trace_coeff_default <- coeff_bayes1_tr %>% 
   filter(draw_cat == "Burn-In") %>% 
-  distinct(draw_cat, name) %>% 
-  filter(!str_detect(name, "beta")) %>% 
+  distinct(draw_cat, name, param_num) %>% 
   mutate(
     iter = 0,
     value = case_when(
@@ -3060,7 +3110,7 @@ coeff_bayes1_tr %<>% bind_rows(trace_coeff_default)
 sigma_trace_coeff <- ggplot(coeff_bayes1_tr %>% 
                         filter(str_detect(name, "sigma_sq"))) +
   geom_line(aes(x = iter, y = value)) +
-  facet_wrap(~draw_cat, nrow = 1, scales = "free") +
+  facet_grid(rows = name ~ draw_cat, scales = "free") +
   labs(title = "Sigma Squared Trace")
 
 sigma_trace_coeff
@@ -3068,22 +3118,23 @@ sigma_trace_coeff
 # Trace plot of lambdas
 lambda_trace_coeff <- ggplot(coeff_bayes1_tr %>% 
                          filter(str_detect(name, "lambda"))) +
-  geom_line(aes(x = iter, y = value, color = name), alpha = 0.5) +
-  facet_wrap(~draw_cat, nrow = 1, scales = "free") +
-  scale_color_viridis_d(option = "cividis") +
-  theme(legend.position = "bottom") +
+  geom_line(aes(x = iter, y = value), alpha = 0.5) +
+  facet_grid(param_num ~ draw_cat, scales = "free") +
   labs(title = "Lambda Trace")
 
 lambda_trace_coeff
+```
+
+```{r}
+#| label: coeff-MCMC-betas
+#| fig.width: 10
+#| fig.height: 20
 
 # Trace plot of betas
 beta_trace_coeff <- ggplot(coeff_bayes1_tr %>% 
-                         filter(str_detect(name, "beta"))) +
-  geom_line(aes(x = iter, y = value, color = name), alpha = 0.1) +
-  theme(legend.position = "bottom") +
-  facet_wrap(~draw_cat, nrow = 1, scales = "free") +
-  scale_color_viridis_d(option = "cividis") +
-  guides(color = "none") +
+                             filter(str_detect(name, "beta"))) +
+  geom_line(aes(x = iter, y = value), alpha = 0.5) +
+  facet_grid(param_num ~ draw_cat, scales = "free") +
   labs(title = "Beta Trace")
 
 beta_trace_coeff
@@ -3108,21 +3159,23 @@ These credible intervals are very large for rare suture fusion types for high ag
 
 # Create data shell
 coeff_newdata <- cranio_coeff_df %>% 
+  mutate(min_age= min(age),
+         max_age = max(age)) %>% 
   group_by(fusion_type) %>% 
-  summarize(min_age= min(age),
-            max_age = max(age)) %>% 
+  summarize(min_age = min(min_age),
+            max_age = max(max_age)) %>% 
   ungroup() %>% 
   rowwise() %>% 
-  mutate(age = list(seq(min_age, max_age, length.out = 100))) %>% 
+  mutate(age = list(seq(min_age, max_age, length.out = 50))) %>% 
   ungroup() %>% 
   mutate(sex = list(c(0, 1))) %>% 
   unnest(age) %>% unnest(sex) %>% 
   mutate(sex = factor(sex, levels = levels(cranio_coeff_df$sex)))
 
 # Run function to convert this to design matrix
-coeff_new_design <- Additive.Effects.Matrix_FN(
+coeff_new_design <- setup_reference_model(
   sm = cranio_coeff_smooth, newdata = coeff_newdata,
-  by.var = "fusion_type", param.vars = "sex", do.penalty = FALSE
+  by_var = "fusion_type", param_formula = ~sex
 )$X
 
 ## Calculate predictions
@@ -3167,3 +3220,48 @@ coeff_bayes1_plot_lim <- coeff_bayes1_plot +
 
 coeff_bayes1_plot_lim
 ```
+
+# Combined Hierarchical Model
+
+Let $\bG \ (N \times M)$ represent the matrix of growth measurements at locations $s_1, ..., s_M$ for individuals $1, ..., N$. Therefore, let $G_i(s_m)$ represent the growth at location $s_m$ for individual $i$. 
+
+Let $\bB(s_m)$ be the $K \times 1$ vector of soap film basis functions evaluated at location $s_m$, and let $\bgamma_i$ be the coefficients multiplied by these soap film basis functions.
+
+We assume:
+$$
+\begin{aligned}
+G_i(s_m) &\sim N(\bgamma \bB(s_m), \sigma^2) \\
+\implies \bG_i(\bs)^\top & \sim N_M(\bB(\bs) \bgamma_i, \sigma^2 \bI_M)
+\end{aligned}
+$$
+
+Next, we assume the prior:
+
+$$
+\bgamma_i \sim N_K(\bbeta^\top \bX_i, \sigma^2 \bP_\lambda^{(\gamma) \ -})
+$$
+where:
+
+$\bX_i$ is a $1 \times Q$ row vector of patient-level fixed effect covariates. This matrix includes some parametric fixed effects and some penalized covariates whose effects are estimated with $R$ different GAMs. So we can also represent $\bX_i$ as:
+$$
+\bX_i = \begin{bmatrix}
+\bw^{(u)}_i & \bb_0(\bw^{(p)}_i) & \ldots & \bb_{R-1}(\bw^{(p)}_i)
+\end{bmatrix}
+$$
+
+where $\bw^{(u)}_i$ is a $1 \times Q_u$ row vector of unpenalized covariates, $\bw^{(p)}_i$ is a $1 \times Q_p$ row vector of penalized covariates, and $\bb_r(\cdot)$ is a $1 \times L$ row vector of basis functions of $\bw^{(p)}$.
+
+Then $\bbeta$ is a $Q \times K$ matrix of coefficients describing the effects of the covariates described above on the soap film basis functions $\bgamma_i \bB$; and
+
+$$\bP_\lambda^{(\gamma)} = \begin{bmatrix}
+\lambda_b \bP_b & \bzero \\
+\bzero & \lambda_f \bP_f
+\end{bmatrix}$$
+
+is a penalty matrix encouraging smoothness of spatial functions across locations $\bs$. Then $\bP_\lambda^{(\gamma) \ -}$ is the generalized inverse of this penalty matrix.
+
+This prior assumption on $\bgamma_i$ yields the posterior likelihood:
+
+$$
+[\bgamma_i | \bG_i, \sigma^2, \bbeta] \sim N_K \Bigg( \Big(\bB^\top \bB + \bP_\lambda^{(\gamma)} \Big)^{-1} \Big( \bB^\top \bG_i + \bP_\lambda^{(\gamma)} \bbeta^\top \bX_i \Big), \ \sigma^2 \Big(\bB^\top \bB + \bP_\lambda^{(\gamma)} \Big)^{-1} \Bigg)
+$$
