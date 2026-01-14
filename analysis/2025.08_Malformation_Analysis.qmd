@@ -172,12 +172,19 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Updated estimation of demographic effects on one soap film basis function: unpenalized parameters now have corrected prior variance term and we use the same lambda for all of the separate suture fusion types. (@sec-coeff-gibbs)
--   Wrote out prior assumptions with more lengthy definitions and vectorization / Kronecker products (@sec-joint-model-spec)
+-   Finished writing out joint model prior distributional assumptions using vectorization and Kronecker products (@sec-joint-model-priors)
+-   Derived full conditional distributions for the joint model (@sec-joint-model-conditionals)
+-   Started writing a new Gibbs sampler function to implement this joint model (@sec-joint-model-gibbs)
+-   Edited description of data to add more clarity about how each pixel $s_m$ is indexed to a location $(x_m, y_m)$ (@sec-joint-model-data)
+-   Edited description of model to remove the previous description of a mixed model (@sec-joint-model-mean)
+-   Edited description of assumptions for $\bgamma$ to add more clarity on the demographic effects contributing to the expectation of $\bgamma$ (@sec-joint-model-coefficients)
 
 ## Questions
 
--   We are currently defining the soap film knots so that they are not necessarily integers. Would it make more sense to define them to be integers, so that the knots are guaranteed to fall on points where we have data?
+-   We are currently defining the soap film knots so that they are not necessarily integers. Would it make more sense to define them to be integers, so that the knots are guaranteed to fall on points where we have data? (The fact that the knots are not integers is why I define $\bOmega$ below.)
+-   The full conditional distribution for $\bbeta$ currently includes the inverse of a $Q*K \times Q*K$ matrix. Is this wrong? Can I reduce it using the Sherman-Morrison-Woodbury formula?
+-   Is it any less efficient to store the parameters coming out of the MCMC model as a matrix as opposed to the vectorized version of that matrix?
+-   What should I be trying to write in C++ for the new Gibbs sampler model?
 
 ## Collaborator Questions
 
@@ -2409,6 +2416,7 @@ $$
 [\bgamma_i | \sigma^2, \lambda_{c}, \lambda_{f}] & \sim \mathrm{N}_K \Bigg( \Big( \bB^\top \bB + \bP_T \Big)^{-1} \bB^\top \bG_i, \ \sigma^2 \Big( \bB^\top \bB + \bP_T \Big)^{-1} \Bigg)
 \end{aligned}
 $$
+
 ## Gibbs Penalized Regression function
 
 ```{r}
@@ -3300,7 +3308,7 @@ Next, we design the joint model that estimates these two levels of effects simul
 
 ## Model Specification {#sec-joint-model-spec}
 
-### Data Description
+### Data Description {#sec-joint-model-data}
 
 First, let $\bS$ be a non-rectangular set of $M = 52,800$ pixels that describe the intracranial space projected onto 2 dimensions. We index each pixel $s_m$ to a pair of integer coordinates $(x_m, y_m) \in \mathbb{Z}^2$. Suppose $\bomega$ is the $279 \times 234$ rectangular grid of pixels circumscribing $\bS$, defined as $\{(x, y) \in \mathbb{R}^2 \ | \ \exists m : x = x_m \vee y = y_m \}$. Then we define $\mathcal{S}$ as the smallest compact set in the continuous space $\mathbb{R}^2$ containing $\bS$, and $\bOmega$ as the smallest rectangle in the continuous space $\mathbb{R}^2$ containing $\bomega$.
 
@@ -3322,7 +3330,7 @@ $$
 
 Third, suppose that along with the observed growth measurements, we also have a vector of demographic covariates related to each image, $\bU_i$, so that $\bU$ is an $N$-row matrix of fixed covariates.
 
-### Mean Estimation
+### Mean Estimation {#sec-joint-model-mean}
 
 We treat each growth measurements $\bG_i(\mathcal{S})$ as one functional outcome, and we would like to estimate a mean function $\mu_i(\mathcal{s_m})$ for each outcome based on demographic covariates. To estimate this model, we set up a Bayesian hierarchical framework:
 
@@ -3388,7 +3396,7 @@ B_1(s_M) & \ldots & B_{K_c}(s_M) & B_{K_c+1}(s_M) & \ldots & B_K(s_M)
 \end{aligned}
 $$
 
-### Soap Film Basis Coefficients Estimation
+### Soap Film Basis Coefficients Estimation {#sec-joint-model-coefficients}
 
 At this level, we have modeled each individual image's spatial pattern across $\bS$ with the parameters $\bgamma$. Next, we account for the effect of the demographics $\bU$ on the growth $\bG$ by estimating each $\gamma_{ik}$ as a function of demographics. 
 
@@ -3396,24 +3404,69 @@ In our case, it is not appropriate to model $\gamma_{ik}$ as a linear function o
 
 Suppose that there are $Q_U$ covariates in $\bU$ that we assume to be linearly related to $\bgamma$. Let $\tilde{\bU}$ be the $N \times Q_U$ matrix including only these linear terms. Note that in our case, the first of these $Q_U$ columns is a column vector of 1's corresponding to the intercept. 
 
-Next, in our model, one covariate in $\bU$ is the Age of the subject in each image. We assume that age has a non-linear association with growth, and also that the non-linear association will vary by suture fusion type. To put this into practice, we will estimate one non-linear function for those with no suture fusion, and then will estimate a fusion-specific deviation function for each suture fusion type.  We estimate the reference non-linear function using a spline expansion: $h_1^*(Age_i) = \sum_{l=1}^L \alpha_{1l} h_l(Age_i)$. Then, for each of the $R-1$ remaining suture fusion types, we estimate a separate fusion-specific function $h_r^*(Age_i)= I(\text{Fusion}_i = r) * [\sum_{l=1}^L \alpha_{rl} h_l(Age_i)]$. As a simplifying assumption, we use the same spline expansion to estimate these $R$ different non-linear functions.
+Next, in our model, one covariate in $\bU$ is the Age of the subject in each image. We assume that age has a non-linear association with growth, and also that the non-linear association will vary by suture fusion type. To put this into practice, we will estimate one non-linear function $\mathcal{H}_{1k}(Age_i)$ for those with no suture fusion, and then will estimate a fusion-specific deviation function for each suture fusion type, $\mathcal{H}_{rk}(Age_i, Fusion_i)$.
+
+Putting these together, we assume
+
+$$ 
+E[\gamma_{ik}] = \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} + \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i).
+$$
+
+Next, we convert this equation into matrix form. The linear terms are relatively straightforward to convert to matrix form:
+
+$$
+\theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} = 
+\begin{bmatrix}
+1 & \tilde{U}_{i2} & \ldots & \theta_{Q_U, k}
+\end{bmatrix} \begin{bmatrix}
+\theta_{1k} \\ \vdots \\ \theta_{Q_U,k}
+\end{bmatrix} = \tilde{\bU}_i \btheta_k.
+$$
+
+To estimate the first non-linear function, we use a spline expansion: $\mathcal{H}_{1k}(Age_i) = \sum_{l=1}^L \alpha_{1lk} h_l(Age_i)$. Then, for each of the $R-1$ remaining suture fusion types, we estimate a separate fusion-specific function $\mathcal{H}_{rk}(Age_i, Fusion_i)= I(Fusion_i = r) * [\sum_{l=1}^L \alpha_{rlk} h_l(Age_i)]$. As a simplifying assumption, we use the same spline expansion to estimate these $R$ different non-linear functions. the spline expansion representation of each non-linear function can also be converted to matrix multiplication:
+
+$$
+\begin{aligned}
+\mathcal{H}_{1k}(Age_i) &= \sum_{l=1}^L \alpha_{1lk} h_l(Age_i) \\
+&= \begin{bmatrix}
+h_1(Age_i) & \ldots & h_L(Age_i)
+\end{bmatrix} \begin{bmatrix}
+\alpha_{11k} \\ \vdots \\ \alpha_{1Lk}
+\end{bmatrix} \\
+&= \bh_{1i} \balpha_{1k} \\ \\
+\mathcal{H}_{rk}(Age_i, Fusion_i) &= \sum_{l=1}^L \alpha_{rlk} h_l(Age_i) * I(Fusion_i = r) \\
+&= I(Fusion_i = r) * \begin{bmatrix}
+h_1(Age_i) & \ldots & h_L(Age_i)
+\end{bmatrix} \begin{bmatrix}
+\alpha_{r1k} \\ \vdots \\ \alpha_{rLk}
+\end{bmatrix} \\
+&= \begin{bmatrix}
+h_{r1}^*(Age_i, Fusion_i) & \ldots & h_{rL}^*(Age_i, Fusion_i)
+\end{bmatrix} \begin{bmatrix}
+\alpha_{r1k} \\ \vdots \\ \alpha_{rLk}
+\end{bmatrix} \\
+&= \bh_{ri}^* \balpha_{rk}, \\ \\
+\text{where } h_{rl}^*(Age_i, Fusion_i) &= I(Fusion_i = r) * h_l(Age_i)
+\end{aligned}
+$$
 
 Putting realizations of these functions together with $\tilde{\bU}$, we have:
 
 $$
 \begin{aligned}
 \bW &= \begin{bmatrix}
-\tilde{\bU} & \bh_1^* & \bh_2^* & \ldots & \bh_{R}^*
+\tilde{\bU} & \bh_1 & \bh_2^* & \ldots & \bh_{R}^*
 \end{bmatrix} \\
 &= 
 \begin{bmatrix}
-1 & \tilde{U}_{12} & \ldots & \tilde{U}_{1Q_U} & h_1(Age_1) & \ldots & h_L(Age_1) & I(\text{Fusion}_1 = 2)*h_1(Age_1) & ... &  I(\text{Fusion}_1 = R)*h_L(Age_1) \\
+1 & \tilde{U}_{12} & \ldots & \tilde{U}_{1Q_U} & h_1(Age_1) & \ldots & h_L(Age_1) & h_{21}^*(Age_1, Fusion_1) & \ldots &  h_{RL}^*(Age_1, Fusion_1) \\
 \vdots \\
-1 & \tilde{U}_{N2} & \ldots & \tilde{U}_{NQ_U} & h_1(Age_N) & \ldots & h_L(Age_N) & I(\text{Fusion}_N = 2)*h_1(Age_i) & ... &  I(\text{Fusion}_N = R)*h_L(Age_N)
+1 & \tilde{U}_{N2} & \ldots & \tilde{U}_{NQ_U} & h_1(Age_N) & \ldots & h_L(Age_N) & h_{21}^*(Age_N, Fusion_N) & \ldots &  h_{RL}^*(Age_N, Fusion_N)
 \end{bmatrix}
 \end{aligned}.
 $$
-Then we define one coefficient vector relating each soap film basis coefficient $\gamma_k$ to these demographics in $\bW$. This coefficient vector $\bbeta_k$ contains $Q_U$ linear coefficients for untransformed covariates, which we denote $\btheta_k$, as well as $R*L$ coefficients defining one $L$-dimensional spline expansion of age for each of the $R$ fusion suture types, which we denote $\balpha_k$. Putting these together, we can write:
+
+Then we define one coefficient vector relating each soap film basis coefficient $\gamma_k$ to all of these demographics in $\bW$. This coefficient vector $\bbeta_k$ contains $Q_U$ linear coefficients for untransformed covariates, which we denote $\btheta_k$, as well as $R*L$ coefficients defining one $L$-dimensional spline expansion of age for each of the $R$ fusion suture types, which we denote $\balpha_k$. Putting these together, we can write:
 
 $$
 \begin{aligned}
@@ -3428,12 +3481,12 @@ $$
 
 Thus, $\bW$ is $N \times Q$ and $\bbeta$ is $Q \times K$, where $Q = Q_U + R*L$. 
 
-Using these definitions, we assume
+Then altogether, we can write
 
-$$ 
+$$
 \begin{aligned}
-E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} + \\
-& \sum_{l=1}^{L} \alpha_{1lk} h_l(Age_i) + \sum_{r=2}^R I(\text{Fusion}_i = r) * \sum_{l=1}^L \alpha_{rlk} h_l(Age_i) \\ \\
+E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} +  \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i) \\
+= {} & \tilde{\bU}_i \btheta_k + \bh_{1i} \balpha_{1k} + \sum_{r = 2}^R \bh_{ri}^* \balpha_{rk} \\ \\
 \implies E[\gamma_{ik}] = {} & \bbeta_k^\top \bW_i^\top \\
 \implies E[\bgamma_i] = {} & \bbeta^\top \bW_i^\top \\
 \implies E[\bgamma_i^\top] = {} & \bW_i \bbeta \\
@@ -3495,12 +3548,14 @@ $$
 \end{aligned}
 $$
 
-### Demographic Effect Estimation
+### Demographic Effect Estimation {#sec-joint-model-demographics}
 
 Last, we need to specify a prior distribution for $\bbeta$. 
 
 We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_\alpha$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the spline expansions share one $\lambda_\alpha$. Therefore, 
-$$\bP_T^{(\alpha)} = \lambda_\alpha [\bI_R \otimes \bP_\alpha]$$.
+$$
+\bP_T^{(\alpha)} = \lambda_\alpha [\bI_R \otimes \bP_\alpha].
+$$
 
 To combine $\balpha_k$ with $\btheta_k$, we also need to establish a prior variance for $\btheta_k$ that leaves no penalty for complexity on $\btheta_k$. This is accomplished by using an identity matrix to represent the prior covariance of $\btheta_k$. Then:
 
@@ -3526,11 +3581,11 @@ $$
 \end{aligned}
 $$
 
-## Distributional Assumptions
+## Distributional Assumptions {#sec-joint-model-distributions}
 
 We can now express all of our distributional assumptions. 
 
-### Prior Distributions
+### Prior Distributions {#sec-joint-model-priors}
 
 We assume conjugate priors for the hyperparameters $\sigma^2, \ \lambda_c, \ \lambda_f, \, \tau^2, \text{ and } \lambda_\alpha$. 
 
@@ -3547,46 +3602,46 @@ $$
 Incorporating these into the assumptions described above, all distributional assumptions are listed below.
 
 $$
-\begin{alignat*}{2}
-(0) & & [vec(\bG) | \bgamma, \sigma^2] \sim {} && \mathcal{N}_{N*M} ( [\bB \otimes \bI_N] vec(\bgamma), \sigma^2 \bI_{N*M} ) \\
-& \iff & [vec(\bG^\top) | \bgamma, \sigma^2] \sim {} && \mathcal{N}_{N*M} ( [\bI_N \otimes \bB] vec(\bgamma^\top), \sigma^2 \bI_{N*M} ) \\ \\
-(1) & {} & [vec(\bgamma) | \bbeta, \sigma^2, \lambda_c, \lambda_f] \sim {} && \mathcal{N}_{N*K} ( [\bI_K \otimes \bW] vec(\bbeta), \sigma^2 [\bP_T^{(\gamma) -} \otimes \bI_N] ) \\
-& \iff & [vec(\bgamma^\top) | \bbeta, \sigma^2, \lambda_c, \lambda_f] \sim {} && \mathcal{N}_{N*K} ( [\bW \otimes \bI_K] vec(\bbeta^\top), \sigma^2 [\bI_N \otimes \bP_T^{(\gamma) -}] ) \\ \\
-(2) & & [vec(\bbeta) | \tau^2, \lambda_\alpha] \sim {} && \mathcal{N}_{Q*K} (\bzero, \tau^2 [\bI_K \otimes \bP_T^{(\beta) -}] ) \\
-& \iff & [vec(\bbeta^\top) | \tau^2, \lambda_\alpha] \sim {} && \mathcal{N}_{Q*K} (\bzero, \tau^2 [\bP_T^{(\beta) -} \otimes \bI_K]) \\ \\
-(3) & & \sigma^2 \sim {} && \text{Inv. Gamma}(a_\sigma, b_\sigma) \\
-(4) & & \lambda_c \sim {} && \text{Gamma}(a_{c}, b_{c}) \\
-(5) & & \lambda_f \sim {} && \text{Gamma}(a_{f}, b_{f}) \\
-(6) & & \tau^2 \sim {} && \text{Inv. Gamma}(a_\tau, b_\tau) \\
-(7) & & \lambda_\alpha \sim {} && \text{Gamma}(a_\alpha, b_\alpha)
+\begin{alignat*}{3}
+& (0) & [vec(\bG) | \bgamma, \sigma^2] & \sim {} && \mathcal{N}_{N*M} ( [\bB \otimes \bI_N] vec(\bgamma), \sigma^2 \bI_{N*M} ) \\
+& & \iff [vec(\bG^\top) | \bgamma, \sigma^2] & \sim {} && \mathcal{N}_{N*M} ( [\bI_N \otimes \bB] vec(\bgamma^\top), \sigma^2 \bI_{N*M} ) \\ \\
+& (1) & {} [vec(\bgamma) | \bbeta, \sigma^2, \lambda_c, \lambda_f] & \sim {} && \mathcal{N}_{N*K} ( [\bI_K \otimes \bW] vec(\bbeta), \sigma^2 [\bP_T^{(\gamma) -} \otimes \bI_N] ) \\
+& & \iff [vec(\bgamma^\top) | \bbeta, \sigma^2, \lambda_c, \lambda_f] & \sim {} && \mathcal{N}_{N*K} ( [\bW \otimes \bI_K] vec(\bbeta^\top), \sigma^2 [\bI_N \otimes \bP_T^{(\gamma) -}] ) \\ \\
+& (2) & [vec(\bbeta) | \tau^2, \lambda_\alpha] & \sim {} && \mathcal{N}_{Q*K} (\bzero, \tau^2 [\bI_K \otimes \bP_T^{(\beta) -}] ) \\
+& & \iff [vec(\bbeta^\top) | \tau^2, \lambda_\alpha] & \sim {} && \mathcal{N}_{Q*K} (\bzero, \tau^2 [\bP_T^{(\beta) -} \otimes \bI_K]) \\ \\
+& (3) & \sigma^2 & \sim {} && \text{Inv. Gamma}(a_\sigma, b_\sigma) \\
+& (4) & \lambda_c & \sim {} && \text{Gamma}(a_{c}, b_{c}) \\
+& (5) & \lambda_f & \sim {} && \text{Gamma}(a_{f}, b_{f}) \\
+& (6) & \tau^2 & \sim {} && \text{Inv. Gamma}(a_\tau, b_\tau) \\
+& (7) & \lambda_\alpha & \sim {} && \text{Gamma}(a_\alpha, b_\alpha)
 \end{alignat*}
 $$
 
-### Full Conditionals
+### Full Conditionals {#sec-joint-model-conditionals}
 
 These priors yield closed-form full conditional distributions, written below.
 
 $$
-\begin{alignat*}{2}
-(1) {} && [vec(\bgamma) | \cdot] \sim {} & \mathcal{N}_{N*K} ( & [(\bB^\top \bB + \bP_T^{(\gamma)})^{-1} \otimes \bI_N] [(\bB^\top \otimes \bI_N) vec(\bG) + (\bP_T^{(\gamma)} \otimes \bW) vec(\bbeta)], \\
-& & & & \sigma^2 [ \underbrace{(\bB^\top \bB + \bP_T^{(\gamma)})^{-1}}_{K \times K} \otimes \bI_N ] \\ \\
-(2) {} && [vec(\bbeta) | \cdot ] \sim {} & \mathcal{N}_{Q*K} ( &  [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1} [(\bP_T^{(\gamma)} \otimes \bW^\top) vec(\bgamma)], \\
-& & & & \sigma^2 [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1}) \\ \\
-(3) {} && [\sigma^2 | \cdot ] \sim {} & \Gamma^{-1} ( & a_\sigma + \frac{N*M}{2} + \frac{N*K}{2}, \\
-& & & & b_\sigma + \frac{1}{2} [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)]^\top [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)] + \\
-& & & & \frac{1}{2}[vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]^\top [\bP_T^{(\gamma)} \otimes \bI_N] [vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]) \\ \\
-(4) {} && [\lambda_c | \cdot] \sim {} & \Gamma ( & a_c + \frac{N * K_c}{2}, \\
-& & & & b_c + \frac{1}{2 \sigma^2} [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)]^\top [\bP_c \otimes \bI_N] [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)] ) \\ \\
-(5) {} && [\lambda_f | \cdot] \sim {} & \Gamma ( & a_f + \frac{N * K_f}{2}, \\
-& & & & b_f + \frac{1}{2 \sigma^2} [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)]^\top [\bP_f \otimes \bI_N] [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)] ) \\ \\
-(6) {} && [\tau^2 | \cdot] \sim {} & \Gamma^{-1} ( & a_\tau + \frac{Q*K}{2}, \\
-& & & & b_\tau + \frac{1}{2} vec(\bbeta)^\top (\bI_K \otimes \bP_T^{(\beta)}) vec(\bbeta) ) \\ \\
-(7) {} && [\lambda_\alpha | \cdot] \sim {} & \Gamma ( & a_\alpha + \frac{R*L*K}{2}, \\
-& & & & b_\alpha + \frac{1}{2 \tau^2} vec(\balpha^\top)^\top (\bP_\alpha \otimes \bI_K) vec(\balpha^\top) )
+\begin{alignat*}{4}
+& (1) & [vec(\bgamma) | \cdot] & \sim {} && \mathcal{N}_{N*K} ( && [(\bB^\top \bB + \bP_T^{(\gamma)})^{-1} \otimes \bI_N] [(\bB^\top \otimes \bI_N) vec(\bG) + (\bP_T^{(\gamma)} \otimes \bW) vec(\bbeta)], \\
+& & & && && \sigma^2 [ \underbrace{(\bB^\top \bB + \bP_T^{(\gamma)})^{-1}}_{K \times K} \otimes \bI_N ] \\ \\
+& (2) & [vec(\bbeta) | \cdot ] & \sim {} && \mathcal{N}_{Q*K} ( &&  [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1} [(\bP_T^{(\gamma)} \otimes \bW^\top) vec(\bgamma)], \\
+& & & && && \sigma^2 [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1}) \\ \\
+& (3) & [\sigma^2 | \cdot ] & \sim {} && \Gamma^{-1} ( && a_\sigma + \frac{N*M}{2} + \frac{N*K}{2}, \\
+& & & && && b_\sigma + \frac{1}{2} [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)]^\top [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)] + \\
+& & & && && \frac{1}{2}[vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]^\top [\bP_T^{(\gamma)} \otimes \bI_N] [vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]) \\ \\
+& (4) & [\lambda_c | \cdot] & \sim {} && \Gamma ( && a_c + \frac{N * K_c}{2}, \\
+& & & && && b_c + \frac{1}{2 \sigma^2} [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)]^\top [\bP_c \otimes \bI_N] [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)] ) \\ \\
+& (5) & [\lambda_f | \cdot] & \sim {} && \Gamma ( && a_f + \frac{N * K_f}{2}, \\
+& & & && && b_f + \frac{1}{2 \sigma^2} [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)]^\top [\bP_f \otimes \bI_N] [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)] ) \\ \\
+& (6) & [\tau^2 | \cdot] & \sim {} && \Gamma^{-1} ( && a_\tau + \frac{Q*K}{2}, \\
+& & & && && b_\tau + \frac{1}{2} vec(\bbeta)^\top (\bI_K \otimes \bP_T^{(\beta)}) vec(\bbeta) ) \\ \\
+& (7) & [\lambda_\alpha | \cdot] & \sim {} && \Gamma ( && a_\alpha + \frac{R*L*K}{2}, \\
+& & & && && b_\alpha + \frac{1}{2 \tau^2} vec(\balpha^\top)^\top (\bP_\alpha \otimes \bI_K) vec(\balpha^\top) )
 \end{alignat*}
 $$
 
-## Combined Model Data Cleaning
+## Combined Model Gibbs {#sec-joint-model-gibbs}
 
 ```{r}
 #| label: bayesian-hierarchical-gibbs
@@ -3597,18 +3652,18 @@ $$
 # - Assumes that each penalty matrix is the full K x K but is block diagonal
 # - Assumes at least one set of penalized terms
 # - Assumes one distinct smoothing parameter lambda for each S penalty matrix
-# - If there are unpenalized terms, assumes one matrix is unpenalized
+# - If there are unpenalized terms, assumes exactly one matrix is unpenalized
 # - Assumes that the one unpenalized matrix is the first in the list
 
 hierarchical_penalized_gibbs <- function(
     outcome_mx, # G
     basis_mx, # B
     demo_mx, # W
-    pen_list_basis, # P_gamma
-    pen_list_demo, # P_beta
+    pen_basis, # P_gamma
+    pen_demo, # P_beta
     basis_has_unpenalized = FALSE, # Controls 1st lambda in basis penalty list
     demo_has_unpenalized = FALSE, # Controls 1st lambda in demo penalty list
-    gamma0, sigmasq0, beta0, lambda_basis0, tausq0, lambda_demo0, # Default parameters
+    gamma0, beta0, sigmasq0, lambda_basis0, tausq0, lambda_demo0, # Default parameters
     a_sigma_pri, b_sigma_pri, a_gamma_pri, b_gamma_pri,
     a_tau_pri, b_tau_pri, a_alpha_pri, b_alpha_pri, # Default hyperparameters
     iters = 1e4, burn_pct = 0.1 # MCMC parameters
@@ -3618,20 +3673,22 @@ hierarchical_penalized_gibbs <- function(
   time_check <- Sys.time()
   time_pts <- c("start" = time_check)
   timer <- c("setup" = 0,
-             "lambda_s" = 0,
+             "penalty_total" = 0,
+             "gamma_update_c" = 0,
+             "gamma_draw" = 0,
              "beta_update_c" = 0,
-             "x_inverse" = 0,
-             "beta_moments" = 0,
              "beta_draw" = 0,
              "sigma2_update" = 0,
-             "lambdas_update" = 0)
+             "lambdas_basis_update" = 0,
+             "tau2_update" = 0,
+             "lambdas_demo_update" = 0)
   
   ### Reformat penalty matrices
-  if(is.matrix(pen_list_basis)){ 
-    pen_list_basis <- list(penalty_list_basis) }
+  if(is.matrix(pen_basis)){ 
+    pen_basis <- list(pen_basis) }
   
   if(is.matrix(pen_list_demo)){ 
-    pen_list_demo <- list(pen_list_demo) }
+    pen_demo <- list(pen_demo) }
   
   ### Calculate dimensions
   
@@ -3644,54 +3701,74 @@ hierarchical_penalized_gibbs <- function(
   stopifnot(nrow(basis_mx) == M)
   stopifnot(nrow(demographic_mx) == N)
   
-  ## Penalty matrices
+  ### Determine what lambdas we need from penalty matrices
   
   # number of penalties on spatial basis coefficients
-  pen_blocks_basis <- length(pen_list_basis)
+  pen_blocks_basis <- length(pen_basis)
   num_penals_basis <- penalty_blocks_basis - as.numeric(basis_has_unpenalized)
   
   # number of penalties on demographic coefficients
-  pen_blocks_demo <- length(pen_list_demo)
+  pen_blocks_demo <- length(pen_demo)
   num_penals_demo <- penalty_blocks_demo - as.numeric(demo_has_unpenalized)
 
   # non-zero columns in each penalty matrix
-  pen_block_cols_basis <- map(pen_list_basis, ~which(apply(., 2, sum) != 0))
-  pen_block_cols_demo <- map(pen_list_demo, ~which(apply(., 2, sum) != 0))
+  pen_block_cols_basis <- map(pen_basis, ~which(apply(., 2, sum) != 0))
+  pen_block_cols_demo <- map(pen_demo, ~which(apply(., 2, sum) != 0))
   
   # number of parameters for each penalty
-  pen_block_Ks_basis <- map_dbl(pen_block_cols_basis, length)
-  pen_block_Ks_demo <- map_dbl(pen_block_cols_demo, length)
+  pen_block_dims_basis <- map_dbl(pen_block_cols_basis, length)
+  pen_block_dims_demo <- map_dbl(pen_block_cols_demo, length)
   
   # First number of parameters might not impact any lambda; if so, remove it
-  if(basis_has_unpenalized){ pen_block_Ks_basis <- pen_block_Ks_basis[-1] }
-  if(demo_has_unpenalized){ pen_block_Ks_demo <- pen_block_Ks_demo[-1] }
+  if(basis_has_unpenalized){ pen_block_dims_basis <- pen_block_dims_basis[-1] }
+  if(demo_has_unpenalized){ pen_block_dims_demo <- pen_block_dims_demo[-1] }
+  
+  ### Data manipulations
+  
+  # Convert outcome matrix to vector
+  outcome_vec <- outcome_mx
+  dim(outcome_vec) <- c(prod(dim(outcome_vec)), 1)
+  
+  # Calculate sum of outcome squared (G transpose * G)
+  outcome_vec_sq <- sum(outcome_vec^2)
+  
+  # Calculate basis matrix squared
+  
+  
+  # Calculate Demographic matrix squared
+  
+  
+  # Calculate basis kron I_N and basis transpose kron I_N
+  
+  
+  # Calculate I_K kron demographic
+  
   
   ### Initialize hyperparameters
   
   # Assign initial values
-  sigmasq <- sigmasq0
-  tausq <- tausq0
-  
-  lambda_basis <- rep_len(lambda_basis0, num_penals_basis)
-  lambda_demo <- rep_len(lambda_demo0, num_penals_demo)
-  
   gamma <- rep_len(gamma0, N*K)
   beta <- rep_len(beta0, Q*K)
+  
+  sigmasq <- sigmasq0
+  lambda_basis <- rep_len(lambda_basis0, num_penals_basis)
+  
+  tausq <- tausq0
+  lambda_demo <- rep_len(lambda_demo0, num_penals_demo)
   
   # Initialize gamma and beta moments before update
   gamma_expect <- gamma
   gamma_var <- diag(N*K)
-  BtB_plus_pen <- diag(N*K)
+  basis_sq_plus_pen <- diag(N*K)
   
   beta_expect <- beta
   beta_var <- diag(Q*K)
-  WtW_plus_pen <- diag(Q*K)
   
   # Compute hyperparameters that don't update (gamma / Igamma shapes)
   a_sigma_post <- a_sigma_pri + N*M/2 + N*K/2
-  a_gamma_post <- a_gamma_pri + N*pen_block_Ks_basis/2
+  a_gamma_post <- a_gamma_pri + N*pen_block_dims_basis/2
   a_tau_post <- a_tau_pri + Q*K/2
-  a_alpha_post <- a_alpha_pri + K*pen_block_Ks_demo/2
+  a_alpha_post <- a_alpha_pri + K*pen_block_dims_demo/2
   
   ### Create objects to save output
   
@@ -3699,15 +3776,20 @@ hierarchical_penalized_gibbs <- function(
   iters_burn <- ceiling(iters * burn_pct)
   
   # Posterior samples
-  gamma_out <- array(0, dim = c(iters - iters_burn, N*K))
-  beta_out <- array(0, dim = c(iters - iters_burn, K))
+  gamma_out <- array(0, dim = c(iters - iters_burn, N, K))
+  beta_out <- array(0, dim = c(iters - iters_burn, Q, K))
   sigmasq_out <- array(0, dim = c(iters - iters_burn, 1))
-  lambda_out <- array(0, dim = c(iters - iters_burn, num_penals))
+  lambda_basis_out <- array(0, dim = c(iters - iters_burn, num_penals_basis))
+  tausq_out <- array(0, dim = c(iters - iters_burn, 1))
+  lambda_demo_out <- array(0, dim = c(iters - iters_burn, num_penals_demo))
   
   # Burn-in period
-  beta_burn <- array(0, dim = c(iters_burn, K))
+  gamma_burn <- array(0, dim = c(iters_burn, N, K))
+  beta_burn <- array(0, dim = c(iters_burn, Q, K))
   sigmasq_burn <- array(0, dim = c(iters_burn, 1))
-  lambda_burn <- array(0, dim = c(iters_burn, num_penals))
+  lambda_basis_burn <- array(0, dim = c(iters_burn, num_penals_basis))
+  tausq_burn <- array(0, dim = c(iters_burn, 1))
+  lambda_demo_burn <- array(0, dim = c(iters_burn, num_penals_demo))
   
   timer["setup"] <- timer["setup"] + 
     difftime(Sys.time(), time_check, units = "secs")
@@ -3720,40 +3802,52 @@ hierarchical_penalized_gibbs <- function(
     # Output on checkpoints
     if(iter %% iters_burn == 0) cat("at turn", iter, "\n")
     
-    ## (1) Update beta (coefficients)
+    ### Compile "Total" penalty matrices (including lambdas)
     
-    # Full penalty matrix including lambdas
-    lambda_S_list <- if(has_unpenalized){
-      # If there are unpenalized terms, do not multiply 1st matrix by any lambda
-      c(
-        S[1],
-        map2(lambda, S[-1],
-             function(l_const, s_mx){
-               l_const * s_mx
-             })
-        )
-    } else {
-      # If no unpenalized terms, scale by one lambda for each penalty matrix
-      map2(lambda, S,
-           function(l_const, s_mx){
-             l_const * s_mx
-           })
-    }
+    ## First, total penalty matrix for gamma coefficients
+    
+    # If there are unpenalized terms, do not multiply 1st matrix by any lambda
+    lambda_basis_mult <- if(basis_has_unpenalized){ 
+      c(1, lambda_basis) 
+    } else { lambda_basis }
+    
+    lambda_demo_mult <- if(demo_has_unpenalized){ 
+      c(1, lambda_demo) 
+    } else { lambda_demo }
+    
+    # Multiply block penalty matrices by lambdas
+    pen_basis_lambda <- map2(lambda_basis_mult, pen_basis, ~ .x * .y)
+    
+    pen_demo_lambda <- map2(lambda_demo_mult, pen_demo, ~ .x * .y)
     
     # Sum together these individual (lambda * S) block diagonal matrices
-    lambda_S <- Reduce("+", lambda_S_list)
+    pen_basis_total <- Reduce("+", pen_basis_lambda)
     
-    timer["lambda_s"] <- timer["lambda_s"] + 
+    pen_demo_total <- Reduce("+", pen_demo_lambda)
+    
+    timer["penalty_total"] <- timer["penalty_total"] + 
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
     
+    ## (1) Update gamma (spatial coefficients)
+    
+    # ** [[Write Gamma moments update function]] **
+    
+    timer["gamma_update_c"] <- timer["gamma_update_c"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
+    
+    # ** [[Write Gamma draw function]] **
+    
+    timer["gamma_draw"] <- timer["gamma_draw"] + 
+      difftime(Sys.time(), time_check, units = "secs")
+    time_check <- Sys.time()
+    
+    ## (2) Update beta (demographic coefficients)
+    
     # Call to Cpp function for beta update
-    penalized_beta_inplace(
-      y = y, X = X, lambda_S = lambda_S, sigmasq = sigmasq,
-      beta_expect, 
-      beta_var, 
-      xtx_plus_pen
-    )
+    
+    ## ** [[Write new C++ beta moments update function]]
     
     timer["beta_update_c"] <- timer["beta_update_c"] + 
       difftime(Sys.time(), time_check, units = "secs")
@@ -3769,7 +3863,7 @@ hierarchical_penalized_gibbs <- function(
     ## (2) Update sigma^2 (residual variance)
     
     # 2nd parameter of inverse gamma
-    b_post <- 
+    b_sigma_post <- 
       b_pri - crossprod(y, X) %*% beta + 
       0.5 * (sum(y^2) + crossprod(beta, xtx_plus_pen) %*% beta)
     
