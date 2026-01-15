@@ -172,19 +172,14 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Finished writing out joint model prior distributional assumptions using vectorization and Kronecker products (@sec-joint-model-priors)
--   Derived full conditional distributions for the joint model (@sec-joint-model-conditionals)
--   Started writing a new Gibbs sampler function to implement this joint model (@sec-joint-model-gibbs)
+
 -   Edited description of data to add more clarity about how each pixel $s_m$ is indexed to a location $(x_m, y_m)$ (@sec-joint-model-data)
 -   Edited description of model to remove the previous description of a mixed model (@sec-joint-model-mean)
 -   Edited description of assumptions for $\bgamma$ to add more clarity on the demographic effects contributing to the expectation of $\bgamma$ (@sec-joint-model-coefficients)
 
 ## Questions
 
--   We are currently defining the soap film knots so that they are not necessarily integers. Would it make more sense to define them to be integers, so that the knots are guaranteed to fall on points where we have data? (The fact that the knots are not integers is why I define $\bOmega$ below.)
--   The full conditional distribution for $\bbeta$ currently includes the inverse of a $Q*K \times Q*K$ matrix. Is this wrong? Can I reduce it using the Sherman-Morrison-Woodbury formula?
--   Is it any less efficient to store the parameters coming out of the MCMC model as a matrix as opposed to the vectorized version of that matrix?
--   What should I be trying to write in C++ for the new Gibbs sampler model?
+
 
 ## Collaborator Questions
 
@@ -3306,7 +3301,7 @@ coeff_bayes1_plot_lim
 
 Next, we design the joint model that estimates these two levels of effects simultaneously.
 
-## Model Specification {#sec-joint-model-spec}
+## Model Explanation {#sec-joint-model-spec}
 
 ### Data Description {#sec-joint-model-data}
 
@@ -3581,6 +3576,23 @@ $$
 \end{aligned}
 $$
 
+## Data-Generating Assumptions
+
+The assumptions above are equivalent to the data-generating model:
+
+$$
+\begin{aligned}
+\underbrace{vec(\bG)}_{N*M \times 1} &= [\bB \otimes \bI_N] vec(\bgamma) + \bepsilon_G \\
+\bepsilon_G & \sim \mathcal{N} ( \bzero, \sigma^2 \bI_{N*M}) \\
+\underbrace{vec(\bgamma)}_{N*K \times 1} &= [\bI_K \otimes \bW] vec(\bbeta) + \bepsilon_\gamma \\
+\bepsilon_\gamma & \sim \mathcal{N} ( \bzero, \sigma^2 [\bP_T^{(\gamma) -} \otimes \bI_N]) \\
+\bP_T^{(\gamma)} &= \begin{bmatrix}
+\lambda_c \bP_c & \bzero \\
+\bzero & \lambda_f \bP_f
+\end{bmatrix}
+\end{aligned}
+$$
+
 ## Distributional Assumptions {#sec-joint-model-distributions}
 
 We can now express all of our distributional assumptions. 
@@ -3698,8 +3710,7 @@ hierarchical_penalized_gibbs <- function(
   K <- ncol(basis_mx)
   Q <- ncol(demographic_mx)
   
-  stopifnot(nrow(basis_mx) == M)
-  stopifnot(nrow(demographic_mx) == N)
+  stopifnot(nrow(basis_mx) == M, nrow(demographic_mx) == N)
   
   ### Determine what lambdas we need from penalty matrices
   
