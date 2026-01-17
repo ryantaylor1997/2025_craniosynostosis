@@ -119,52 +119,56 @@ pacman::p_load(
 # Load my Rcpp functions
 library(DevCranio)
 
-# Define function for predicting GAM on new data (in homage to get_predictions)
-obtain_predictions <- function(model, newdata, 
-                               rm_effects = c("~"), # By default match nothing; assume no variable includes tilde
-                               ci_crit = 1.96){
-  
-  x <- newdata
-  
-  # Get design matrix of basis functions
-  nd_mat <- predict(model, newdata = x, type = "lpmatrix")
-  
-  # Find the columns for effects we want to remove
-  rm_cols <- map(rm_effects, 
-                 ~grepv(., colnames(nd_mat), fixed = T)) %>% 
-    unlist() %>% unique()
-  
-  # For these columns, set (linear predictor) columns to 0
-  nd_mat[, rm_cols] <- 0
-  
-  # Get coefficients of the model
-  m_coef <- coef(model)
-  
-  # Calculate predictions
-  x$fit <- (nd_mat %*% m_coef) %>% as.vector()
-  
-  # Calculate variances (without calculating all n x n covariances)
-  x$se <- (nd_mat %*% vcov(model) * nd_mat) %>% rowSums() %>% sqrt()
-  
-  # Add confidence interval
-  x %<>% mutate(
-    ci_ll = fit - ci_crit * se,
-    ci_ul = fit + ci_crit * se
-  )
-  
-  return(x)
-}
+# Load my R functions
+source(here("source", "load_matrix_data_fn.R"))
+source(here("source", "obtain_predictions_fn.R"))
+source(here("source", "lm_penalized_gibbs_fn.R"))
+source(here("source", "construct_smooth_ref_code_fns.R"))
 
 # Set switches
-DO_LOAD_MATRICES <- F
+DO_LOAD_MATRICES <- T
+DO_FILTER_MATRICES <- T
 DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
 DO_INDIV_SOAPS <- F
 
-# Set constants
+# Set a flag for what not to delete
 RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
 ```
+
+```{r}
+#| label: load-data-prep
+
+# Set directory for references
+here::i_am("2025.08_Malformation_Analysis.qmd")
+
+# Set data folder
+DATA_FOLDER <- here::here("../../data/Lukemire, Joshua's files - data/")
+COVARS_FOLDER <- here::here("../../data/SphericalMaps_database/SphericalMaps_database/")
+
+# Set subfolder with image data
+MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
+```
+
+```{r}
+#| label: set-constants
+
+# Define number of knots along each dimension of soap film
+GRID_N <- 10
+
+# Use data set to merge in fusion variables for regressions
+fusion_dict <- tibble(
+  fusion_type = c("Normative", 
+                  "Sagittal", "Metopic", 
+                  "Right Coronal", "Bicoronal", "Left Coronal"),
+  fused_Sagittal = c(0, 1, 0, 0, 0, 0),
+  fused_Metopic = c(0, 0, 1, 0, 0, 0),
+  fused_RCoronal = c(0, 0, 0, 1, 1, 0),
+  fused_LCoronal = c(0, 0, 0, 0, 1, 1)
+)
+```
+
 
 # Overview
 
@@ -172,6 +176,7 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
+-   Reorganized code into separate R scripts
 
 -   Edited description of data to add more clarity about how each pixel $s_m$ is indexed to a location $(x_m, y_m)$ (@sec-joint-model-data)
 -   Edited description of model to remove the previous description of a mixed model (@sec-joint-model-mean)
@@ -194,26 +199,19 @@ Data were sent by collaborators at Colorado (primarily Antonio Porras, Alejandro
 
 Covariates are stored in a "merged_covariates" csv file that Josh Lukemire created from these data. Each image's malformation map is stored as a $500 \times 500$ matrix in its own RData file saved in a data folder in Josh's OneDrive.
 
-We clean the covariate data set for easier analysis and to identify rare subsets of the data that should be excluded from our early work.
+```{r}
+#| label: load-covariate-data
+
+source(here("source", "01_load_covariate_data.R"))
+```
+
+
+We clean the covariate data set for easier analysis. While doing this, we need to summarize and visualize the data to identify rare subsets that should be excluded from our early work.
 
 ```{r}
-#| label: load-data
+#| label: clean-covariate-data
 
-# Set directory for references
-here::i_am("2025.08_Malformation_Analysis.qmd")
-
-# Set data folder
-DATA_FOLDER <- here::here("../../data/Lukemire, Joshua's files - data/")
-COVARS_FOLDER <- here::here("../../data/SphericalMaps_database/SphericalMaps_database/")
-
-# Set subfolder with image data
-MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
-
-# List all files with any extension (so no folders)
-matrix_files <- list.files(MATRIX_FOLDER, pattern = "\\.")
-
-# Read in covariates data
-patient_images <- read_csv(file.path(DATA_FOLDER, "merged_covariates.csv"))
+source(here("source", "02_clean_covariate_data.R"))
 ```
 
 First, we ensure that all images in the covariate data are represented in the data folder and vice versa.
@@ -221,28 +219,9 @@ First, we ensure that all images in the covariate data are represented in the da
 ```{r}
 #| label: clean-file-names
 
-### Clean cranio covariates file
-
-## Create new data set with easier names
-cranio <- patient_images %>% 
-  clean_names()
-
-## Check if files in data were found in data folder
-cranio %<>%
-  mutate(
-    fname = paste0(id_fmt, "_desc-unsigneddist.RData"),
-    fname_exists = if_else(fname %in% matrix_files, 1, 0)
-  )
-
-# Print a table to check we have all files
-fname_summ <- tibble(
-  in_data_not_folder = sum(1 - cranio$fname_exists),
-  in_folder_not_data = sum(!matrix_files %in% cranio$fname)
-)
-
+# Summary table of files in data vs. folder
 kbl(fname_summ, caption = "Check Files vs. Data Availability") %>% 
   kable_styling(full_width = F)
-
 ```
 
 ## Suture Fusion Categories
@@ -250,54 +229,9 @@ kbl(fname_summ, caption = "Check Files vs. Data Availability") %>%
 Next, we create a cleaner categorization of each image's suture fusions. Information about the suture fusions for each image are initially stored in a series of binary columns: *metopic_fused, sagittal_fused, left_coronal_fused, right_coronal_fused, left_lambdoid_fused, right_lambdoid_fused*. We combine these into one column and create categories for "Bicoronal" and "Multiple."
 
 ```{r}
-
 #| label: clean-sutures
 
-## Classify sutures
-
-# Currently stored in binary columns with names ending in "fused"
-# Reshape data to identify all combinations of sutures
-fusion_df <- cranio %>% 
-  select(id_fmt, matches("fused")) %>% 
-  pivot_longer(cols = -id_fmt) %>% 
-  mutate(
-    name = name %>% 
-      str_remove("_fused") %>% 
-      str_replace_all("_", " ") %>% 
-      str_to_title()
-  ) %>% 
-  mutate(fusion = if_else(value == 1, name, NA_character_)) %>% 
-  group_by(id_fmt) %>% 
-  summarize(num_fusions = sum(value, na.rm = T),
-            fusions = paste(na.omit(fusion), collapse = "/")) %>% 
-  ungroup()
-
-# (1) count number of sutures
-# (2) identify bicoronal (the only useful instance of multiple sutures)
-# (3) identify other instances of multiple sutures
-# (3) assign remaining suture types
-cranio %<>%
-  left_join(fusion_df, by = "id_fmt") %>% 
-  mutate(fusion_type = case_when(
-    num_fusions == 0 ~ "Normative",
-    fusions == "Left Coronal/Right Coronal" ~ "Bicoronal",
-    num_fusions > 1 ~ "Multiple",
-    T ~ fusions
-  )) %>% 
-  mutate(fusion_type = fct_infreq(fusion_type)) %>% 
-  mutate(fusion_type = fct_relevel(fusion_type, "Multiple", after = Inf))
-
-# Summarize frequencies of each suture type
-fusion_summ <- cranio %>% 
-  group_by(fusion_type) %>% 
-  summarize(pics = n(),
-            patients = n_distinct(id_base)) %>% 
-  ungroup() %>% 
-  arrange(desc(pics)) %>% 
-  mutate(pics_pct = pics / sum(pics),
-         patients_pct = patients / sum(patients)) %>% 
-  adorn_totals("row")
-
+# Summary table of pictures by fusion type
 kbl(fusion_summ, caption = "Suture Fusions: Full Data") %>% 
   kable_styling(full_width = F)
 ```
@@ -308,26 +242,8 @@ Next, we look at the availability of longitudinal data. No longitudinal data exi
 
 ```{r}
 #| label: visits
-
-# Identify which visit each image is from and how many visits they had
-cranio %<>%
-  arrange(id_base, age) %>% 
-  group_by(id_base) %>% 
-  mutate(visit_num = 1:n()) %>% 
-  # Count visits total and visits under age limit (currently 1 year)
-  mutate(visits = max(visit_num)) %>% 
-  ungroup()
-
-# Summarize visits on average and max by fusion group
-visits_summ <- cranio %>%
-  group_by(fusion_type) %>% 
-  summarize(patients = n_distinct(id_base),
-            pics = n(),
-            visits_avg = mean(visits),
-            visits_max = max(visits)) %>%
-  ungroup() %>% 
-  arrange(desc(visits_avg))
   
+# Summary table of longitudinal visits by fusion type
 kbl(visits_summ, caption = "Longitudinal Visits: Full Data") %>% 
   kable_styling(full_width = F)
 ```
@@ -341,20 +257,11 @@ First, there are a small number of patients who were labeled by the collaborator
 ```{r}
 #| label: group-and-sphenoidal
 
-## Investigate any issues with fusion type
-# Sanity check: fusion category against collaborators' "group" column
-fusion_group_summ <- tabyl(cranio, fusion_type, group)
-
+# Summary table of group labels by fusion type
 kbl(fusion_group_summ, caption = "Collaborators' Group vs. Fusions") %>% 
   kable_styling(full_width = F)
 
-# 6 in "Craniosynostosis" group with no sutures all have sphenoidal involvement
-sphen_summ <- cranio %>% 
-  group_by(fusion_type, group, sphenoidal_involvement) %>% 
-  summarize(n = n()) %>% 
-  ungroup() %>% 
-  arrange(desc(n))
-
+# Summary table of fusion type, group, and sphenoidal involvement
 kbl(sphen_summ, caption = "Sphenoidal Involvement Summary") %>% 
   kable_styling(full_width = F)
 ```
@@ -366,20 +273,9 @@ Third, we likewise find that *Right Lambdoid* and *Left Lambdoid* suture fusions
 ```{r}
 #| label: multiple-sutures
 
-## Investigate multiple sutures
-
-fusion_multiple_summ <- cranio %>% 
-  filter(fusion_type == "Multiple") %>% 
-  group_by(num_fusions, fusions) %>% 
-  summarize(pics = n(),
-            patients = n_distinct(id_base)) %>% 
-  ungroup() %>% 
-  arrange(desc(pics))
-
+# Summary table of possible multiple fusions
 kbl(fusion_multiple_summ, caption = "Summary of Multiple Fusions") %>% 
   kable_styling(full_width = F)
-
-max_multiple_count <- max(fusion_multiple_summ$pics)
 ```
 
 Fourth, we find that 18 images in the data are associated with a "previous surgery." Since we are more interested in the patterns associated with suture fusions before surgical intervention, we exclude these images. Notably, 6 of these 18 images have multiple suture fusions, so they would already be excluded.
@@ -387,15 +283,7 @@ Fourth, we find that 18 images in the data are associated with a "previous surge
 ```{r}
 #| label: previous-surgery
 
-## Investigate previous surgery
-surg_summ <- cranio %>% 
-  filter(previous_surgery == 1) %>% 
-  group_by(fusion_type, group, sphenoidal_involvement) %>% 
-  summarize(n = n()) %>% 
-  ungroup() %>% 
-  arrange(desc(n)) %>% 
-  adorn_totals("row")
-
+# Summary table of previous surgery with other exclusion criteria
 kbl(surg_summ, caption = "Images with Previous Surgery") %>% 
   kable_styling(full_width = F)
 ```
@@ -407,43 +295,15 @@ Fifth, we check the distribution of age in our data. We determine that over 98\%
 ```{r}
 #| label: age-summary
 
-# Set colors for fusions to remain consistent in future plots
-fusion_color_dict <- distinct(cranio, fusion_type) %>% 
-  arrange(fusion_type) %>% 
-  mutate(color = c(palette.colors(palette = "Set1")[-c(6, 9)],
-                   palette.colors(palette = "Set1")[c(6, 9)]))
-
-# Plot age densities
-age_plot <- ggplot(cranio) +
-  geom_density_ridges(aes(x = age, 
-                          y =  fusion_type, 
-                          fill = fusion_type)) +
-  scale_fill_discrete(guide = "none", 
-                      palette = fusion_color_dict$fusion_color) +
-  labs(x = "Age (Days)", y = "Fusion Type")
-
+# Plot of age distribution by fusion
 age_plot
 
-# Summarize densities
-have_fusions <- cranio %>% 
-  filter(fusion_type != "Normative")
-
-have_fusions_quant <- have_fusions %$%
-  quantile(age, probs = c(0.9, 0.95, 0.975, 0.99, 1)) %>% 
-  enframe(name = "Percentile (with Fusions)", value = "Age") %>% 
-  mutate(Years = Age / 365.25)
-
+# High age percentiles
 kbl(have_fusions_quant, 
     caption = "Max. Age Options: Patients with Fusions") %>% 
   kable_styling(full_width = F)
 
-# Set maximum age as 3 years old
-cranio_max_age <- 365 * 3
-
-# Determine what percentile this corresponds to among patients with fusion
-max_age_summ <- tibble("Age Cap" = cranio_max_age, 
-                       "Percentile" = mean(have_fusions$age <= cranio_max_age))
-
+# Details on maximum age we use
 kbl(max_age_summ, caption = "Age cap summary") %>% kable_styling(full_width = F)
 ```
 
@@ -451,176 +311,35 @@ kbl(max_age_summ, caption = "Age cap summary") %>% kable_styling(full_width = F)
 
 Next, we load the malformation maps into one data set. Each malformation map is stored as a $500 \times 500$ matrix of pointwise absolute value differences, and is saved in its own RData file. We load each RData file in the remaining subset of images selected above. Then, we reshape the data from wide to long, so that each row contains one pixel's row, column, and pointwise difference value. We then store this long data as a tibble nested in the "data" column. Finally, we rearrange these data so that we can work with a data set with one row for each pixel, containing all participants' pointwise differences in that pixel. In addition, we merge each pixel's region label to this pointwise matrix data, so that we can associate this analysis with previous analyses.
 
-```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
 
 
 ```{r}
 #| label: load-matrix-files
 
-# Define function to read each file
-load_matrix_data <- function(x){
-  
-  # Path to data file
-  full_path <- file.path(MATRIX_FOLDER, x)
-  
-  # Load RData file (pointwise_diff)
-  load(full_path)
-  
-  # Convert matrix to long format and remove values outside mask
-  reduced_data <- pointwise_diff %>%
-    reshape2::melt(varnames = c("row", "col"), value.name = "diff") %>%
-    as_tibble() %>%
-    drop_na(diff)
-  
-  return(list(reduced_data))
-}
-
 # Toggle whether to create matrix data
 if(DO_LOAD_MATRICES){
-  # Create minimal matrix data
-  cranio_matrix <- cranio %>%
-    select(fname, age, sex, fusion_type) %>% 
-    rowwise() %>%
-    mutate(
-      raw_data = load_matrix_data(fname)
-    ) %>%
-    ungroup()
+  source(here("source", "03_load_Matrix_data.R"))
+} else if(DO_FILTER_MATRICES){
   
-  # Rearrange so each row is a pixel
-  cranio_matrix %<>% 
-    unnest(raw_data) %>%
-    group_by(row, col) %>%
-    nest() %>% 
-    ungroup()
-  
-  # Load regions and mask
-  load(paste0(DATA_FOLDER, "region_labels_and_mask.RData"))
-  
-  cranio_matrix %<>%
-    left_join(region_labels,
-              by = c("row" = "X", "col" = "Y")) %>% 
-    filter(value != 0) %>% 
-    rename(region = value)
-  
-  saveRDS(cranio_matrix, 
-          file = here::here("intermediate", 
-                            "covars_and_matrices.rds"))
-} else{ 
   cranio_matrix <- readRDS(file = here::here("intermediate", 
-                                             "covars_and_matrices.rds")) }
-
-# Flip axes to match overhead view
-cranio_matrix %<>%
-  mutate(row = -row, 
-         col = -col)
-```
-
-We use these matrices to identify duplicates in the data. Currently, these are still included in our analyses.
-
-```{r}
-#| label: check-duplicate-data
-
-# Find instances where average of all observations is the same
-dup_avgs <- cranio_matrix %>% 
-  unnest(data) %>% 
-  select(fname, fusion_type, age, row, col, diff) %>% 
-  group_by(fname, fusion_type, age) %>% 
-  nest() %>% 
-  mutate(diff_avg = map_dbl(data, ~mean(.$diff))) %>% 
-  select(-data) %>% 
-  group_by(diff_avg) %>% 
-  mutate(n = n()) %>% 
-  ungroup() %>% 
-  filter(n > 1)
-
-cranio_dup_fnames <- unique(dup_avgs$fname)
-
-# Reshape these to 1 per set of duplicates
-dups_collected <- dup_avgs %>% 
-  group_by(diff_avg, n) %>% 
-  summarize(fnames = paste(na.omit(unique(fname)), collapse = "/"),
-            fusions = paste(na.omit(unique(fusion_type)), collapse = "/"),
-            ages = paste(na.omit(unique(age)), collapse = "/")) %>% 
-  ungroup() %>% 
-  arrange(desc(n), diff_avg)
-
-# Add information about these duplicate pairs
-dups_collected %<>% 
-  # Check study
-  mutate(is_cnh = if_else(str_detect(fnames, "CNH"), 1, 0),
-         is_chco = if_else(str_detect(fnames, "CHCO"), 1, 0))
-
-dup_by_study <- dups_collected %>% 
-  group_by(is_cnh, is_chco) %>% 
-  summarize(n = n()) %>% 
-  ungroup()
+                                             "covars_and_matrices.rds")) 
+  
+  source(here("source", "04_filter_matrix_data.R"))
+} else {
+  cranio_matrix_sub <- readRDS(file = here::here("intermediate",
+                                                 "covars_and_matrices_sub.rds"))
+}
 
 ```
 
 ### Data Subset {#sec-subset-data}
-
-```{r}
-#| label: filtered-data
-
-### Create subset data
-# Exclude rare fusion categories: multiple, lambdoid
-# Exclude sphenoidal involvement (in Craniosynostosis group without suture)
-# Exclude patients with previous surgery (10)
-# Exclude patients above age cap of 3 yrs
-# Only keep last picture taken
-cranio_sub <- cranio %>% 
-  filter(!fusion_type %in% c("Multiple", 
-                             "Left Lambdoid", "Right Lambdoid") &
-           sphenoidal_involvement %in% c(NA, 0) &
-           previous_surgery %in% c(NA, 0) &
-           age <= cranio_max_age &
-           visit_num == visits) %>% 
-  # Reduce number of columns
-  select(id_base, fname, fusion_type,
-         age, sex) %>% 
-  arrange(id_base, age) %>% 
-  # Make sex variable categorical; drop unused fusion types
-  mutate(sex = factor(sex),
-         fusion_type = fct_drop(fusion_type))
-
-# Clear space
-rm(cranio)
-```
-
-```{r}
-#| label: filter-to-subset
-
-# Filter pointwise data to same subset
-cranio_matrix <- cranio_matrix %>% 
-  unnest(data) %>% 
-  filter(fname %in% cranio_sub$fname) %>% 
-  group_by(row, col, region) %>% 
-  nest() %>% 
-  ungroup()
-```
 
 We generate a summary of the fusion types present in the remaining observations, to compare against the full data.
 
 ```{r}
 #| label: summarize-cleaned-data
 
-# Summarize counts of images and patients by fusion type
-fusion_summ_sub <- cranio_sub %>% 
-  group_by(fusion_type) %>% 
-  summarize(pics = n(),
-            patients = n_distinct(id_base)) %>% 
-  ungroup() %>% 
-  arrange(desc(pics)) %>% 
-  mutate(pics_pct = pics / sum(pics),
-         patients_pct = patients / sum(patients)) %>% 
-  adorn_totals("row")
-
+# Summary table of fusion types in final data
 kbl(fusion_summ_sub, caption = "Fusions in Subset Data") %>% 
   kable_styling(full_width = F)
 ```
@@ -630,6 +349,7 @@ We also create a Table 1, to identify what representation we have across key dem
 ```{r}
 #| label: table-1
 
+# Table 1 for final data
 table1(~age + sex | fusion_type,
        data = cranio_sub)
 ```
@@ -639,34 +359,19 @@ table1(~age + sex | fusion_type,
 
 First, to understand the first way we can aggregate the data spatially, we plot the collaborators' defined regions by pixel.
 
+```{r}
+#| label: matrix-analysis
+
+source(here("source", "05_analyze_matrix_data.R"))
+```
+
+
 ### Region Map
 
 ```{r}
 #| label: plot-regions
 
-# Create dataset of only region assignment for each pixel
-matrix_region <- cranio_matrix %>% 
-  select(row, col, region) %>% 
-  distinct()
-
-# Identify regions' centroids for labels
-matrix_region_center <- matrix_region %>% 
-  group_by(region) %>% 
-  summarize(row_center = mean(row),
-            col_center = mean(col)) %>% 
-  ungroup()
-
-# Plot regions
-plot_regions <- ggplot() +
-  geom_raster(data = matrix_region, 
-              aes(x = row, y = col, fill = factor(region))) +
-  geom_text(data = matrix_region_center, 
-            aes(x = row_center, y = col_center, label = factor(region))) +
-  coord_fixed() +
-  theme_void() +
-  scale_fill_brewer(palette = "Set3", guide = "none") +
-  labs(title = "Region Map", fill = "Region")
-
+# Plot of region locations
 plot_regions
 ```
 
@@ -675,41 +380,9 @@ plot_regions
 Next, we summarize the growth by suture fusion and plot these averages on the brain shape.
 
 ```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
 #| label: map-fusions
 
-### Summarize differences by fusions
-
-# Create dataset of average cell for each fusion
-matrix_fusion <- cranio_matrix %>% 
-  # Extract only fusion type and outcome from nested data
-  hoist(data, "fusion_type", "diff") %>% 
-  select(-c(data, region)) %>% 
-  unnest_longer(col = c(fusion_type, diff)) %>% 
-  # Summarize average by pixel and fusion type
-  group_by(row, col, fusion_type) %>% 
-  summarize(diff_avg = mean(diff)) %>% 
-  ungroup()
-
-# Plot brain map by fusion type
-plot_fusion <- ggplot(matrix_fusion) +
-  geom_raster(aes(x = row, y = col, fill = diff_avg)) +
-  facet_wrap(~fusion_type) +
-  coord_fixed() +
-  theme_void() +
-  scale_fill_viridis_c(option = "turbo") +
-  labs(title = "Fusion Average Growth",
-       fill = "Avg. Growth") +
-  theme(legend.position = "bottom")
-
-# Print fusion maps
+# Plot pixel average by fusion
 plot_fusion
 ```
 
@@ -720,62 +393,10 @@ We add to this summary by showing how these averages change on average over time
 ```{r}
 #| label: plot-fusion-and-age
 
-### Investigate age
-
-# Define age category cutoffs
-age_breaks <- c(0, 61, 122, 183, 366, cranio_max_age)
-
-# Label these with spaces so they can wrap in plots
-age_break_labels <- map_chr(2:length(age_breaks), 
-                            ~paste0(age_breaks[.-1], 
-                                    " - ", 
-                                    if_else(. == length(age_breaks), "", "<"), 
-                                    age_breaks[.]))
-
-# Create dataset with fusion and age info
-matrix_age_fusion <- cranio_matrix %>% 
-  hoist(data, "fusion_type", "age", "diff") %>% 
-  select(-c(data, region)) %>% 
-  unnest_longer(col = c(fusion_type, age, diff)) %>% 
-  # Add age categories
-  mutate(age_bin = cut(age, 
-                       breaks = age_breaks, labels = age_break_labels, 
-                       right = FALSE, include.lowest = T)) %>% 
-  # Summarize average in these bins
-  group_by(row, col, fusion_type, age_bin) %>% 
-  summarize(diff_avg = mean(diff)) %>% 
-  ungroup()
-
-# Plot brain map by fusion type and age
-plot_fusion_age <- ggplot(matrix_age_fusion) +
-  geom_raster(aes(x = row, y = col, fill = diff_avg)) +
-  facet_grid(fusion_type ~ age_bin,
-             labeller = label_wrap_gen(width = 10)) +
-  coord_fixed() +
-  scale_fill_viridis_c(option = "turbo") +
-  theme_void() +
-  theme(axis.text = element_blank(),
-        axis.ticks = element_blank()) +
-  labs(title = "Fusion - Age Average Growth",
-       fill = "Avg. Growth") +
-  theme(legend.position = "bottom")
-
-# Print fusion maps
+# Plot pixel average by fusion and age bucket
 plot_fusion_age
 
-## Determine sample size for these averages
-
-# Count images per fusion and age bin
-size_fusion_age <- cranio_sub %>% 
-  mutate(age_bin = cut(age, 
-                       breaks = age_breaks, labels = age_break_labels, 
-                       right = FALSE, include.lowest = T)) %>% 
-  group_by(fusion_type, age_bin) %>% 
-  summarize(n = n()) %>% 
-  ungroup() %>% 
-  pivot_wider(names_from = age_bin, values_from = n, id_cols = fusion_type)
-
-# Print table
+# Table of sample size by fusion and age bucket
 kbl(size_fusion_age, caption = "Fusion-Age Sample Size") %>% 
   kable_styling(full_width = F)
 ```
@@ -787,35 +408,7 @@ In order to gain a better understanding of the specific shape of the age effect,
 ```{r}
 #| label: age-effect
 
-# Check shape of age effect by region and fusion
-
-# Summarize by age, region, and fusion type; have option to round to nearest month
-matrix_age_region <- cranio_matrix %>% 
-  hoist(data, "fusion_type", "age", "diff") %>% 
-  select(-data) %>% 
-  unnest_longer(col = c(fusion_type, age, diff)) %>% 
-  mutate(age_round_month = round(age / 30)) %>% 
-  group_by(fusion_type, age, region) %>% 
-  summarize(diff_avg = mean(diff)) %>% 
-  ungroup()
-
-plot_age <- ggplot(matrix_age_region) +
-  # Plot 1 line over age for each region-fusion combo
-  geom_smooth(aes(x = age, y = diff_avg, 
-                  color = fusion_type, fill = fusion_type),
-              alpha = 0.2) +
-  facet_wrap(~region) +
-  scale_color_discrete(palette = fusion_color_dict$color) +
-  scale_fill_discrete(palette = fusion_color_dict$color) +
-  labs(title = "Fusion - Region Average Growth by Age",
-       x = "Age (Days)",
-       y = "Avg. Growth",
-       color = "Fusion Type",
-       fill = "Fusion Type") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-# Print plot
+# Plot average age effect by fusion type by region
 plot_age
 ```
 
@@ -824,77 +417,8 @@ Finally, we consider how each fusion type might differ between the two natal sex
 ```{r}
 #| label: fusion-by-sex
 
-# Take average pointwise differences in cell by fusion and sex
-matrix_sex_fusion <- cranio_matrix %>% 
-  hoist(data, "fusion_type", "sex", "diff") %>% 
-  select(-c(data, region)) %>% 
-  unnest_longer(col = c(fusion_type, sex, diff)) %>% 
-  # Summarize average in these bins
-  group_by(row, col, fusion_type, sex) %>% 
-  summarize(diff_avg = mean(diff)) %>% 
-  ungroup()
-
-# Plot brain map by fusion type and age
-plot_fusion_sex <- ggplot(matrix_sex_fusion) +
-  geom_raster(aes(x = row, y = col, fill = diff_avg)) +
-  facet_grid(fusion_type ~ sex,
-             labeller = label_wrap_gen(width = 9)) +
-  coord_fixed() +
-  scale_fill_viridis_c(option = "turbo") +
-  theme_void() + 
-  theme(axis.text = element_blank(),
-        axis.ticks = element_blank()) +
-  labs(title = "Fusion-Sex Average Growth",
-       fill = "Avg. Growth") +
-  theme(legend.position = "bottom")
-
-# Print fusion maps
+# Plot pixel average by sex by fusion type
 plot_fusion_sex
-```
-
-# Matrix Boundary
-
-To prepare for preliminary models, we construct the boundary of our matrix data, differentiating the area in which we have data and the area outside of it. To construct this boundary, we need to address two issues: first, we need to define the boundary such that none of our data overlap with it; and second, we need to order the points that make up the boundary so that the boundary can be constructed by simply connecting these points with line segments *in order*. Therefore, we construct this boundary in a few steps. First, we take the concave hull of all points in our matrix; this approach is not be generalizable to the case where there are multiple loops to account for in the soap film, but it works for our case, where we have one continuous boundary. Next, we add a buffer of 1 unit, so that none of our data will overlap with the boundary. We then convert this shape to a boundary line and "sample" points at 1-unit intervals, ensuring that we have even coverage of the resulting boundary shape. These points are passed as a list to the soap film function. The boundary resulting from this process is depicted below.
-
-```{r}
-#| label: cranio-boundary
-
-## Create boundary around cranium shape
-
-# Create polygon around pixels in cranium shape
-cranio_bound_shape <- cranio_matrix %>% 
-  distinct(row, col) %>% 
-  st_as_sf(coords = c("row", "col")) %>% 
-  concaveman(concavity = 1)
-
-# Create boundary as points
-cranio_bound_matrix <- cranio_bound_shape %>% 
-  # Add buffer so boundary is beyond data
-  st_buffer(1) %>% 
-  # Convert to line
-  st_boundary() %>% 
-  # Take points along this line at density = 1 unit
-  st_line_sample(density = 1) %>% 
-  st_coordinates() %>% 
-  as_tibble() %>% 
-  rename(row = X, col = Y) %>% 
-  # Add order of appearance in data
-  mutate(appearance_order = 1:n())
-
-# Visualize how boundary compares to all points
-bound_viz <- ggplot() +
-  geom_point(data = cranio_matrix %>% select(row, col),
-             aes(x = row, y = col), alpha = 0.5, size = 0.0001) +
-  geom_point(data = cranio_bound_matrix,
-            aes(x = row, y = col, color = appearance_order)) +
-  scale_color_viridis_c(option = "mako") +
-  coord_fixed() +
-  labs(title = "Boundary Sanity Check",
-       color = "Order of Appearance") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-bound_viz
 ```
 
 # Preliminary Models {#sec-prelim-models}
@@ -902,6 +426,13 @@ bound_viz
 ## Region-Level Independent
 
 Next, we get a better understanding of how these demographics interact with fusion type through preliminary regression models. First, we regress the region-level average growth for each subject on fusion indicators, age, and sex. Based on the plot above, we include age as a smooth term; all other covariates are included as indicator variables. We also run a multiple linear regression with age as a linear term.
+
+```{r}
+#| label: region-models
+
+source(here("source", "06_prelim_models_region.R"))
+```
+
 
 We denote the average growth for patient $i$ in region $d$ as $G_{id}$. We let $f_d(\cdot)$ be a cubic regression spline estimated on observations from region $d$; we choose a cubic regression spline for faster estimation of many regressions, especially when we extend to a pixel-level model below. Then these models can be written:
 
@@ -926,222 +457,15 @@ G_{id} = {} & \beta_{0, d} + \beta_{1,d} [\text{Sagittal}]_i + \beta_{2,d} [\tex
 $$
 
 ```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
 #| label: region-model
 
-# Add fusion variables for regression
-fusion_dict <- tibble(
-  fusion_type = c("Normative", 
-                  "Sagittal", "Metopic", 
-                  "Right Coronal", "Bicoronal", "Left Coronal"),
-  fused_Sagittal = c(0, 1, 0, 0, 0, 0),
-  fused_Metopic = c(0, 0, 1, 0, 0, 0),
-  fused_RCoronal = c(0, 0, 0, 1, 1, 0),
-  fused_LCoronal = c(0, 0, 0, 0, 1, 1)
-)
-
-# Recreate pixel map with region labels
-matrix_region <- cranio_matrix %>% 
-  select(row, col, region) %>% 
-  distinct() %>% 
-  st_as_sf(coords = c("row", "col")) %>% 
-  group_by(region) %>% 
-  summarize(geometry = st_union(geometry)) %>% 
-  ungroup() %>% 
-  mutate(geometry = st_convex_hull(geometry)) %>% 
-  mutate(centroid = st_centroid(geometry))
-
-save(matrix_region, file = here::here("intermediate", "region_shape_object.rda"))
-
-if(DO_PRELIM_MODEL_REGION){
-  
-  ## Run models for average pointwise differences in each region
-  region_models <- cranio_matrix %>% 
-    # Rearrange to incorporate subject data
-    unnest(data) %>% 
-    # Take average in each region for each image
-    group_by(fname, age, sex, fusion_type, region) %>% 
-    summarize(diff_avg = mean(diff)) %>% 
-    ungroup() %>%
-    # Add fusion indicators
-    left_join(fusion_dict, by = "fusion_type") %>% 
-    # Nest region-specific data
-    group_by(region) %>% 
-    nest() %>% 
-    ungroup() %>% 
-    # Fit model with age as a spline (cubic regression basis for fast estimation)
-    mutate(model = map(data,
-                       ~gam(diff_avg ~ 
-                              fused_Sagittal + fused_Metopic +
-                              fused_RCoronal * fused_LCoronal +
-                              sex + s(age, bs = "cr"),
-                            data = .x, method = "REML")),
-           # Also try linear age
-           model_linear = map(data,
-                              ~lm(diff_avg ~ 
-                                    fused_Sagittal + fused_Metopic +
-                                    fused_RCoronal * fused_LCoronal +
-                                    sex + age,
-                                  data = .x)))
-  
-  saveRDS(
-    region_models, 
-    file = here::here("intermediate", 
-                      "prelim_models_region.rds"))
-  
-} else { 
-  region_models <- readRDS(
-    file = here::here("intermediate", 
-                      "prelim_models_region.rds")) }
-
-region_models %<>% 
-  ## Add bicoronal variance to final coefficients; output coefficient summary
-  mutate(across(matches("model"),
-                ~map(.,
-                     function(m){
-                       
-                       # Make constrast vector identifying all coronal variables
-                       is_coronal <- as.numeric(str_detect(names(coef(m)), "Coronal"))                        
-                       
-                       # Compute variance of bicoronal combination
-                       bicoronal_v <- crossprod(is_coronal,  vcov(m)) %*% is_coronal
-                       bicoronal_e <- crossprod(is_coronal, coef(m))
-                       
-                       # Add bicoronal as row in tidy summary
-                       bicoronal_row <- tibble(
-                         term = "fused_Bicoronal",
-                         estimate = bicoronal_e[1,1],
-                         std.error = sqrt(bicoronal_v[1,1])) %>% 
-                         mutate(p.value = 2 * pnorm(abs(estimate / std.error), 
-                                                    lower.tail = FALSE))
-                       
-                       # Output coefficient table (smaller than model)
-                       return(tidy(m, parametric = TRUE) %>% 
-                                bind_rows(bicoronal_row))
-                     }),
-                .names = "{.col}_coeffs")) %>% 
-  # Rename individual model terms before merging
-  mutate(model_coeffs = map(model_coeffs, 
-                            ~rename_with(., 
-                                         .cols = -term,
-                                         .fn = ~paste0(., "_smooth"))),
-         model_linear_coeffs = map(model_linear_coeffs, 
-                                   ~rename_with(., 
-                                                .cols = -term,
-                                                .fn = ~paste0(., "_linear")))) %>% 
-  # Merge model summaries
-  mutate(coeffs_combo = map2(model_coeffs, model_linear_coeffs,
-                             ~full_join(.x, .y, by = "term"))) %>% 
-  # Clean model summary
-  mutate(coeffs_combo_cln = map(coeffs_combo, 
-                                ~filter(., term != "fused_RCoronal:fused_LCoronal") %>% 
-                                  arrange(-str_detect(term, "fused")) %>% 
-                                  mutate(term = fct_inorder(term))))
-
-# Merge model summaries with matrix for plotting
-model_region_matrix <- region_models %>% 
-  select(region, coeffs_combo_cln) %>% 
-  unnest(coeffs_combo_cln) %>% 
-  full_join(matrix_region, by = "region")
-
-# Plot parametric coefficients
-plot_region_smooth <- ggplot(model_region_matrix %>% filter(term != "age")) +
-  geom_sf(aes(geometry = geometry, fill = estimate_smooth), linewidth = 0) +
-  geom_sf_text(aes(geometry = centroid, label = region)) +
-  facet_wrap(~term) +
-  scale_fill_viridis_c(option = "plasma") +
-  theme_void() +
-  labs(title = "Region-Level Smooth Age Model",
-       fill = "Coefficient") +
-  theme(legend.position = "bottom")
-
-# Plot parameters from alternate version of the model
-plot_region_linear <- ggplot(model_region_matrix) +
-  geom_sf(aes(geometry = geometry, fill = estimate_linear), linewidth = 0) +
-  geom_sf_text(aes(geometry = centroid, label = region)) +
-  facet_wrap(~term) +
-  scale_fill_viridis_c(option = "plasma") +
-  theme_void() +
-  labs(title = "Region-Level Linear Age Model",
-       fill = "Coefficient") +
-  theme(legend.position = "bottom")
-
-# Print these plots
+# Plot parametric coefficients from region-level model using linear age
 plot_region_linear
 
+# Plot parametric coefficients from region-level model using smooth of age
 plot_region_smooth
 
-## Plot smoothed effect
-# Define range for predictions
-newdata_cranio_age <- tibble(
-  fused_Sagittal = 0,
-  fused_Metopic = 0,
-  fused_RCoronal = 0,
-  fused_LCoronal = 0,
-  sex = 0,
-  age = seq(min(cranio_sub$age), 
-            max(cranio_sub$age),
-            length.out = 30)
-)
-
-# Calculate predicted values and Conf Ints
-model_region_smooth <- region_models %>% 
-  select(region, model) %>% 
-  # Add predictions from smooth term
-  mutate(smooth_pred = map(
-    model, 
-    ~obtain_predictions(
-      model = .x, newdata = newdata_cranio_age))) %>% 
-  select(-model) %>% 
-  unnest(smooth_pred)
-
-# Add linear age effect to compare
-model_region_linear <- region_models %>% 
-  select(region, model_linear) %>% 
-  mutate(pred_data = list(newdata_cranio_age),
-         lin_pred = map(
-    model_linear,
-    ~predict(.x, newdata = newdata_cranio_age, se.fit = TRUE) %>% 
-      as.data.frame())) %>% 
-  select(-model_linear) %>% 
-  unnest(c(pred_data, lin_pred)) %>% 
-  mutate(ci_ll = fit - 1.96 * se.fit,
-         ci_ul = fit + 1.96 * se.fit)
-
-# Combine smooth and linear predictions
-model_region_combo <- model_region_smooth %>% 
-  select(region, age, fit, ci_ll, ci_ul) %>% 
-  mutate(type = "Smooth") %>% 
-  bind_rows(
-    model_region_linear %>% 
-      select(region, age, fit, ci_ll, ci_ul) %>% 
-      mutate(type = "Linear")
-  )
-
-# Plot 1 smoothed effect per region
-plot_region_smooth_pred <- ggplot(model_region_combo) +
-  geom_line(aes(x = age, y = fit, 
-                color = factor(region), linetype = rev(type))) +
-  geom_ribbon(aes(x = age, 
-                  ymin = ci_ll, ymax = ci_ul, 
-                  fill = factor(region),
-                  linetype = type),
-              alpha = 0.3) +
-  facet_wrap(~type, nrow = 1) +
-  scale_linetype(guide = "none") +
-  scale_color_discrete(palette = "Set3") +
-  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Female)", 
-       color = "Region", fill = "Region") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
+# Plot region-level age smooth effects
 plot_region_smooth_pred
 
 ```
@@ -1149,6 +473,13 @@ plot_region_smooth_pred
 ## Pixel-Level Independent
 
 To get a more detailed spatial perspective, we then run the same regression model on each individual pixel in the data.
+
+```{r}
+#| label: pixel-models
+
+source(here("source", "07_prelim_models_pixel.R"))
+```
+
 
 We denote the growth for patient $i$ in matrix row $x$ and column $y$ as $G_{i}(x,y)$ and let $f^{(x,y)}(\cdot)$ be a cubic regression spline function estimated on observations at pixel $(x,y)$; then this model can be written:
 
@@ -1165,116 +496,25 @@ G_{i}^{(x,y)} = {} & \beta_{0}^{(x,y)} + \beta_{1}^{(x,y)} [\text{Sagittal}]_i +
 $$
 
 ```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
 #| label: pixel-model
 
-if(DO_PRELIM_MODEL_PIXEL){
-  
-  ## Run models for pointwise differences in each pixel
-  pixel_models <- cranio_matrix %>% 
-    mutate(
-      model = map(data,
-                  function(d){
-                    d_reg <- d %>% left_join(fusion_dict, by = "fusion_type")
-                    
-                    mdl <- bam(diff ~ 
-                                 fused_Sagittal + fused_Metopic +
-                                 fused_RCoronal * fused_LCoronal +
-                                 sex + s(age, bs = "cr"),
-                               data = d_reg)
-                    
-                    return(mdl)
-                  })) %>% 
-    mutate(coeffs = map(
-      model,
-      function(m){
-        
-        # Make constrast vector identifying all coronal variables
-        is_coronal <- as.numeric(str_detect(names(coef(m)), "Coronal"))                        
-        
-        # Compute variance of bicoronal combination
-        bicoronal_v <- crossprod(is_coronal, vcov(m)) %*% is_coronal
-        bicoronal_e <- crossprod(is_coronal, coef(m))
-        
-        # Add bicoronal as row in tidy summary
-        bicoronal_row <- tibble(
-          term = "fused_Bicoronal",
-          estimate = bicoronal_e[1,1],
-          std.error = sqrt(bicoronal_v[1,1])) %>% 
-          mutate(statistic = estimate / std.error,
-                 p.value = 2 * pnorm(abs(estimate / std.error), 
-                                     lower.tail = FALSE))
-        
-        # Output coefficient table (smaller than model)
-        return(tidy(m, parametric = TRUE) %>% 
-                 bind_rows(bicoronal_row))
-      }))
-  
-  # Combine pixel-level models and add region column
-  model_pixel_summ <- pixel_models %>% 
-    select(row, col, coeffs) %>% 
-    unnest(coeffs) %>% 
-    # Remove raw bicoronal interaction term (replaced with Bicoronal combo)
-    filter(term != "fused_RCoronal:fused_LCoronal") %>% 
-    arrange(row, col, -str_detect(term, "fused")) %>% 
-    mutate(term = fct_inorder(term))
-  
-  # Extract smother predictions
-  model_pixel_smooth <- pixel_models %>% 
-    select(row, col, region, model) %>% 
-    # Add plot of smoothed term
-    mutate(smooth_pred = map(
-      model, 
-      ~obtain_predictions(
-        model = .x, newdata = newdata_cranio_age))) %>% 
-    select(-model) %>% 
-    unnest(smooth_pred)
-  
-  save(model_pixel_summ, model_pixel_smooth,
-       file = here::here("intermediate", 
-                         "prelim_model_pixels_summ.rda"))
-} else{ load(file = here::here("intermediate", 
-                               "prelim_model_pixels_summ.rda")) }
-
-# Plot pixel-level coefficients
-plot_pixel <- ggplot(model_pixel_summ) +
-  geom_raster(aes(x = row, y = col, fill = estimate)) +
-  facet_wrap(~term) +
-  coord_fixed() +
-  scale_fill_viridis_c(option = "plasma") +
-  theme_void() +
-  labs(title = "Pixel-Level Model",
-       fill = "Coefficient") +
-  theme(legend.position = "bottom")
-
+# Plot pixel-level parametric coefficients
 plot_pixel
 
-# Plot 1 age smoothed effect per region
-plot_pixel_pred <- ggplot(model_pixel_smooth) +
-  geom_line(aes(x = age, y = fit, 
-                group = interaction(row, col),
-                color = factor(region)),
-            alpha = 0.05, linewidth = 0.05) +
-  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Female)", 
-       color = "Region") +
-  theme_minimal() +
-  scale_color_discrete(palette = "Set3") +
-  guides(color = guide_legend(override.aes = list(alpha = 1, linewidth = 0.5))) +
-  theme(legend.position = "bottom")
-
+# Plot pixel-level age smooth effects, colored by region
 plot_pixel_pred
 ```
 
 ## Fusion-Independent GAM {#sec-prelim-gam}
 
 Next, for a preliminary spatial model, we split the data only by fusion type. Based on the plots above, the age and sex effects are basically uniform across all of the pixels, so we include these as linear terms that do not vary spatially. Otherwise, we only include a tensor spline interaction between row and column indices. Our model does not reflect the brain boundary. It is a generalized additive model with an intercept and a tensor product smooth of row and column indices.
+
+```{r}
+#| label: gam-2d-models
+
+source(here("source", "08_prelim_models_2dGAM.R"))
+```
+
 
 We denote the growth for patient $i$ with suture fusion type $r$ in matrix row $x$ and column $y$ as $G_{ri}(x,y)$. Let $f_{r}(\cdot)$ be a cubic regression spline estimated on observations from patients with suture fusion $r$ and let $h_r(\cdot, \cdot)$ be a tensor product smooth with a cubic regression spline basis; then this model can be written:
 
@@ -1291,124 +531,15 @@ $$
 Predictions from this model are shown below. In order to show how this model is inadequate for our data, we compare these predictions to the boundary of the matrix data.
 
 ```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
 #| label: preliminary-gam
 
-if(DO_PRELIM_MODEL_FUSION){
-  
-  # Run preliminary spatial models
-  fusion_models <- cranio_matrix %>% 
-    unnest(data) %>% 
-    # Split data by fusion type
-    group_by(fusion_type) %>% 
-    nest() %>% 
-    ungroup() %>% 
-    # Fit model with linear sex effect, smoothed age term, and row-col tensor surface
-    mutate(model = map(data,
-                       ~bam(diff ~ sex + s(age, bs = "cr") + 
-                              te(row, col),
-                            data= .x)))
-  
-  saveRDS(
-    fusion_models, 
-    file = here::here("intermediate", "prelim_models_fusion_te.rds"))
-} else { 
-  fusion_models <- readRDS(
-    file = here::here("intermediate", "prelim_models_fusion_te.rds")) }
-
-# Set new data for GAM
-newdata_fusiongam <- tibble(
-  fused_Sagittal = 0,
-  fused_Metopic = 0,
-  fused_RCoronal = 0,
-  fused_LCoronal = 0,
-  sex = 0,
-  age = 365,
-  row = list(seq(from = (min(cranio_bound_matrix$row) - 30), 
-                 to = (max(cranio_bound_matrix$row) + 30), 
-                 length.out = 50)),
-  col = list(seq(from = (min(cranio_bound_matrix$col) - 30), 
-                 to = (max(cranio_bound_matrix$col) + 30), 
-                 length.out = 50))
-) %>% 
-  unnest_longer(row) %>% unnest_longer(col)
-
-fusion_models  %<>% 
-  # Predict from this model for spatial pattern (1 year old male)
-  mutate(pred_data = map(
-    model,
-    ~obtain_predictions(.x, newdata = newdata_fusiongam)))
-
-# Flatten predictions into their own data
-fusion_model_summ <- fusion_models %>% 
-  select(fusion_type, pred_data) %>% 
-  unnest(pred_data)
-
-# Plot these predictions (in a rectangle shape with brain mask)
-plot_model_fusion <- ggplot() +
-  geom_raster(data = fusion_model_summ, 
-              aes(x = row, y = col, fill = fit)) +
-  geom_sf(data = cranio_bound_shape, fill = NA, linewidth = 1) +
-  facet_wrap(~fusion_type, nrow = 2) +
-  scale_fill_viridis_c(option = "turbo") +
-  scale_alpha(range = c(0.5, 1), guide = "none") +
-  theme_void() +
-  theme(axis.text = element_blank(),
-        axis.ticks = element_blank()) +
-  labs(fill = "Pred. Growth\n(1 y.o. F)") +
-  theme(legend.position = "bottom")
-
+# Plot 2D GAM predictions on rectangle with brain shape superimposed
 plot_model_fusion
 
-ggsave(here::here("Presentation Images", "tensor_smooth_fusion.png"),
-       plot_model_fusion,
-       height = 4, width = 8, units = "in")
-
-# Add row and column to age smooth new-data (to be cancelled out)
-newdata_age_gam <- newdata_cranio_age %>% 
-  mutate(row = 0, col = 0)
-
-## Extract age smoothed predictions
-model_fusion_smooth <- fusion_models %>% 
-  select(fusion_type, model) %>% 
-  # Add plot of smoothed term
-  mutate(smooth_pred = map(
-    model, 
-    ~obtain_predictions(.x, 
-                       newdata = newdata_age_gam,
-                       rm_effects = c("row", "col")))) %>% 
-  select(-model) %>% 
-  unnest(smooth_pred)
-
-# Plot 1 smoothed effect per fusion type
-plot_fusion_pred <- ggplot(model_fusion_smooth) +
-  geom_line(aes(x = age, y = fit, color = fusion_type)) +
-  geom_ribbon(aes(x = age, ymin = ci_ll, ymax = ci_ul, 
-                  group = fusion_type, fill = fusion_type),
-              alpha = 0.5) +
-  labs(x = "Age (Days)", y = "Predicted Growth (Male)", 
-       color = "Fusion Type", fill = "Fusion Type") +
-  scale_fill_discrete(palette = fusion_color_dict$color) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
+# Plot fusion-specific age effects
 plot_fusion_pred
 
-## Compile parametric coefficients (Intercept and sex)
-model_fusion_params <- fusion_models %>% 
-  select(fusion_type, model) %>% 
-  mutate(params = map(model, ~tidy(., parametric = TRUE))) %>% 
-  select(-model) %>% 
-  unnest(params)
-
-# Print table of these parametric coefficients
+# Print table of parametric coefficients from these models
 kbl(model_fusion_params, 
     caption = "Preliminary 2D GAM Parametric Coefficients") %>% 
   kable_styling(full_width = F)
@@ -1419,79 +550,40 @@ kbl(model_fusion_params,
 
 Next, we introduce the soap film smoother. To fit this model, we first need to create the boundary that determines the extent of the model and the set of knots in $\mathbb{R}^2$ that will define the smoothing functions.
 
+```{r}
+#| label: soap-film-setup
+
+source(here("source", "09_setup_soap_film.R"))
+```
+
+
+## Matrix Boundary
+
+To construct this boundary, we need to address two issues: first, we need to define the boundary such that none of our data overlap with it; and second, we need to order the points that make up the boundary so that the boundary can be constructed by simply connecting these points with line segments *in order*. Therefore, we construct this boundary in a few steps. First, we take the concave hull of all points in our matrix; this approach is not be generalizable to the case where there are multiple loops to account for in the soap film, but it works for our case, where we have one continuous boundary. Next, we add a buffer of 1 unit, so that none of our data will overlap with the boundary. We then convert this shape to a boundary line and "sample" points at 1-unit intervals, ensuring that we have even coverage of the resulting boundary shape. These points are passed as a list to the soap film function. The boundary resulting from this process is depicted below.
+
+```{r}
+#| label: cranio-boundary
+
+# Plot boundary shape as a sanity check
+bound_viz
+```
+
 ## Soap Film Grid  {#sec-soap-film-grid}
 
 We construct the boundary shape above. Here, we set up a $10 \times 10$ grid of knots and crop this grid to only the knots within the boundary. We visualize these knots to ensure that the process works: every knot included in our model is within the boundary, and every knot not included is outside of it.
 
+
+
 ```{r}
 #| label: soap-infrastructure
 
-## Create boundary as list
-bound_list <- list(
-  list(row = cranio_bound_matrix$row,
-       col = cranio_bound_matrix$col)
-)
-
-## Create knots
-grid_n <- 10
-
-# Identify row knot points
-grid_row <- seq(min(cranio_bound_matrix$row), max(cranio_bound_matrix$row), 
-                length.out = grid_n)
-
-# Identify column knot points
-grid_col <- seq(min(cranio_bound_matrix$col), max(cranio_bound_matrix$col), 
-                length.out = grid_n)
-
-# Expand to grid of knots
-grid_all <- expand.grid("row" = grid_row, "col" = grid_col)
-
-# Crop to cranial boundary
-so_grid_k <- grid_all %>% 
-  st_as_sf(coords = c("row", "col")) %>% 
-  st_filter(cranio_bound_shape) %>% 
-  st_coordinates() %>% 
-  as_tibble() %>% 
-  rename(row = X, col = Y)
-
-# Visualize grid
-grid_viz <- ggplot() +
-  geom_point(data = cranio_bound_matrix, aes(x = row, y = col), color = "blue") +
-  geom_point(data = grid_all, aes(x = row, y = col)) +
-  geom_point(data = so_grid_k, aes(x = row, y = col), color ="red") +
-  coord_fixed() +
-  labs(title = "Grid Sanity Check")
-
+# Plot grid of all knots and those used in the model (in the boundary)
 grid_viz
 ```
 
 ## Smoother Object {#sec-soap-film-smoothcon}
 
 Next, we use the set of row and column indices (shared among all images) to create a design matrix containing 2-dimensional basis functions that make up a smoother that can be used for every individual image. We use the `mgcv::smoothCon` function.
-
-```{r}
-#| label: soap-film-basis
-
-# Keep only what we need to build smoother
-so_matrix_pts <- cranio_matrix %>% 
-  select(row, col)
-
-save(so_matrix_pts, file = here::here("intermediate", "matrix_indices.rda"))
-
-# Construct soap film smoother object
-cranio_soap <- smoothCon(
-  s(
-    row, col, 
-    bs = "so", 
-    xt = list(
-      bnd = bound_list)
-  ),
-  data = so_matrix_pts, knots = so_grid_k
-)
-
-# Keep the actual smooth list
-cranio_soap <- cranio_soap[[1]]
-```
 
 From this smoother object, we extract the relevant matrices that will allow us to fit the model. Let $m$ be the number of pixels in each image and $K$ be the number of basis functions evaluated on these pixels. Then we extract the $m \times K$ design matrix $\bB$, the $K_c \times K_c$ penalty matrix for the boundary spline ($\bP_c$) and the $K_f \times K_f$ penalty matrix for the interior spline ($\bP_f$). In `mgcv`, The smoother object stores each penalty matrix as a block-diagonal size $K \times K$ matrix, where $K = K_c + K_f$. We denote these $\bP^{(c)}$ and $\bP^{(f)}$:
 
@@ -1522,43 +614,16 @@ $$
 \\ \\
 $$
 
-```{r}
-#| results: hide
-
-# Clear memory space
-rm(cranio_bound_shape)
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
-#| label: soap-film-matrices
-
-# Define model matrix
-so_X <- cranio_soap$X
-
-# Identify sample size
-so_n <- nrow(so_X)
-
-# Identify boundary and film penalty matrices
-S_bound0 <- cranio_soap$S[[1]]
-S_film0 <- cranio_soap$S[[2]]
-
-# Identify different parts of penalty matrix
-cols_bound <- which(apply(S_bound0, 2, sum) != 0)
-cols_film <- which(apply(S_film0, 2, sum) != 0)
-
-# Get interior "film" design and penalty matrices
-so_X_film <- so_X[, cols_film]
-S_film <- S_film0[cols_film, cols_film]
-
-save(so_X_film, 
-     file = here::here("intermediate", "design_matrix_interior.rData"))
-```
-
 ### Soap Film Basis Functions {#sec-soap-basis-fns}
 
 After constructing the basis, it is useful to visualize the basis functions to understand the effect each has on predictions.
+
+```{r}
+#| label: basis-fn-analysis
+
+source(here("source", "10_visualize_bases.R"))
+```
+
 
 First, we identify the outermost points in our data, on which the boundary splines are estimated. These points are the "nearest neighbors" to the boundary points defined earlier. We keep the boundary points in the order in which they are defined in the boundary object, so that they can be connected by line segments to form the boundary. For each boundary point, we calculate the Euclidean distance from the previous point and take the cumulative sum of these distances to determine the distance around the boundary. We use this measure as the X axis to plot the basis that is used to estimate the boundary condition, i.e. the value of the outcome on the boundary.
 
@@ -1571,84 +636,9 @@ Second, represent that function with the basis expansion $f_i^{(c)}(d) = \sum_{j
 These basis functions $\boldsymbol{\delta}(d)$ are plotted below:
 
 ```{r}
-#| label: set-up-basis-visualizations
-
-# Link knots to interior basis functions
-so_grid_k %<>% mutate(basis_fn = cols_film)
-
-# Identify sample of interior knots to plot (3 groups of 5)
-so_plot_knots <- cols_film[c(1:5, 
-                             (round(length(cols_film)/2) + c(-2:2)),
-                             ((length(cols_film) - 4):length(cols_film)))]
-
-### Link boundary points with nearest matrix point
-# Boundary is buffered 1 unit away from matrix; need to match it with real points
-
-# Convert boundary to sf for nearest neighbor matching
-# Add in distances determined in smoother object
-bound_points <- cranio_bound_matrix %>% 
-  mutate(bound_r = cranio_soap$sd$bnd[[1]]$d[-1]) %>% 
-  st_as_sf(coords = c("row", "col"), remove = F)
-
-# Convert points within matrix to sf for nearest neighbor
-matrix_sf <- so_matrix_pts %>% st_as_sf(coords = c("row", "col"), remove = F)
-
-# Identify nearest matrix neighbor to each boundary point
-bound_points %<>%
-  mutate(nearest_cell = st_nearest_feature(bound_points, matrix_sf)) %>% 
-  st_drop_geometry() %>% 
-  select(nearest_cell, bound_r)
-
-# Match matrix points to their order on the boundary
-matrix_pts_df <- so_matrix_pts %>%
-  mutate(cell_id = 1:n()) %>% 
-  left_join(bound_points,
-            by = c("cell_id" = "nearest_cell")) %>% 
-  # When we get multiple matches, take first point on boundary
-  arrange(cell_id, bound_r) %>% 
-  group_by(cell_id) %>% 
-  slice(1) %>% 
-  ungroup() %>% 
-  select(-cell_id)
-
-# Create data of basis functions and pixel locations for plotting
-basis_df <- cranio_soap$X %>% 
-  data.frame() %>% 
-  bind_cols(matrix_pts_df) %>% 
-  pivot_longer(-c(row, col, bound_r), 
-               names_to = "basis_fn") %>% 
-  mutate(basis_fn = as.numeric(str_remove(basis_fn, "X")),
-         fn_cat = case_when(basis_fn %in% cols_bound ~ "Boundary", 
-                            basis_fn %in% cols_film ~ "Interior"))
-```
-
-```{r}
-#| label: PDE-matrix
-
-# Reconstruct PDE derivative matrix D
-soap_D <- t(cranio_soap$sd$P) %*%
-  cranio_soap$sd$L %*% cranio_soap$sd$U %*%
-  cranio_soap$sd$Q
-
-```
-
-
-```{r}
 #| label: boundary-cyclic-basis-viz
 
-# Plot boundary cyclic 1-dimensional splines
-soap_basis_cyclic <- ggplot(data = basis_df %>% 
-                              filter(!is.na(bound_r) & fn_cat == "Boundary")) +
-  geom_line(aes(x = bound_r, y = value, color = factor(basis_fn))) +
-  scale_color_brewer(palette = "Paired") +
-  labs(x = "Distance Along Boundary", 
-       y = "Function Value", 
-       color = "Basis Function",
-       title = "Boundary Cyclic Basis Functions") +
-  theme_minimal() +
-  theme(legend.position = "bottom") +
-  guides(color = guide_legend(nrow = 2, byrow = T))
-
+# Plot cyclic spline defined on distance along boundary
 soap_basis_cyclic
 ```
 
@@ -1659,18 +649,7 @@ Then the "boundary-condition-induced-function" $\alpha_i^{(c)}(x,y)$ has the bas
 ```{r}
 #| label: boundary-2d-function-viz
 
-# Plot boundary-induced 2-dimensional basis functions
-soap_basis_bd <- ggplot() +
-  geom_raster(data = basis_df %>% filter(fn_cat == "Boundary"),
-              aes(x = row, y = col, fill = value)) +
-  scale_fill_viridis_c() +
-  labs(x = NULL, y = NULL, fill = "Fn. Value",
-       title = "Boundary Basis Functions") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~basis_fn)
-
+# Plot boundary-induced 2d bases
 soap_basis_bd
 ```
 
@@ -1691,24 +670,7 @@ Then the interior function has the basis function representation $h_i^{(f)}(x,y)
 ```{r}
 #| label: basis-interior-viz
 
-# Plot interior basis functions with corresponding knots
-soap_basis_int <- ggplot() +
-  geom_raster(data = basis_df %>% filter(basis_fn %in% so_plot_knots),
-              aes(x = row, y = col, fill = value)) +
-  geom_point(data = so_grid_k %>% select(-basis_fn), 
-             aes(x = row, y = col), 
-             color ="black", size = 0.01) +
-  geom_point(data = so_grid_k %>% filter(basis_fn %in% so_plot_knots), 
-             aes(x = row, y = col), 
-             color ="red", size = 0.01) +
-  scale_fill_viridis_c() +
-  labs(x = NULL, y = NULL, fill = "Fn. Value",
-       title = "Interior Basis Functions") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~basis_fn, ncol = 5)
-
+# Plot selection of interior bases
 soap_basis_int
 ```
 
@@ -1746,78 +708,11 @@ $$
 Last, we reshape our data to include one row for each patient, with a nested data set of row indices, column indices, and pointwise differences.
 
 ```{r}
-#| results: hide
+#| label: frequentist-soap-fits
 
-# Clear memory space
-rm(so_grid_k, so_matrix_pts, 
-   bound_points, matrix_pts_df, basis_df)
+source(here("source", "11_fit_soap_film_freq.R"))
 ```
 
-```{r}
-#| label: soap-film-gcv-constants
-
-# Define grid for penalty term optimization
-lambdas_film <- 10^(-7:-1)
-lambdas_bound <- lambdas_film
-
-## Calculate other necessary objects that only depend on X and penalty constant:
-# 1. "visor" matrix for each penalty constant (hat without the first X)
-# 2. Trace of hat matrix (with X cycled to end)
-
-# First, only interior film
-so_constants_film <- tibble("sp" = lambdas_film) %>% 
-  mutate(visor = map(sp,
-                     ~tcrossprod(solve(crossprod(so_X_film) + 
-                                         .x * S_film), 
-                                 so_X_film))) %>% 
-  mutate(hat_trace = map_dbl(visor, ~sum(diag(.x %*% so_X_film))))
-
-# Next, boundary and interior
-so_constants <- tibble(
-  expand.grid("sp_film" = lambdas_film, "sp_bound" = lambdas_bound)
-  ) %>% 
-  mutate(visor = map2(sp_film, sp_bound,
-                      ~tcrossprod(solve(crossprod(so_X) +
-                               (.x * S_bound0 + .y * S_film0)),
-                               so_X))) %>% 
-  mutate(hat_trace = map_dbl(visor, ~sum(diag(.x %*% so_X)))) %>% 
-  mutate(constant_row = 1:n())
-
-## Reshape data to have pointwise differences for each image
-cranio_models <- cranio_matrix %>% 
-  unnest(data) %>% 
-  select(fname, fusion_type, row, col, diff) %>% 
-  group_by(fname, fusion_type) %>% 
-  nest() %>% 
-  ungroup()
-
-save(cranio_models, file = here::here("intermediate", "growth_maps.rda"))
-
-# Test with small subset of data
-so_test_df <- cranio_models %>% 
-  filter(!fname %in% cranio_dup_fnames) %>% 
-  group_by(fusion_type) %>% 
-  slice(1) %>% 
-  ungroup()
-
-# Identify range of outcome values for consistent plotting
-so_diff_range <- (
-  cranio_models %>% 
-    select(data) %>% 
-    mutate(max_diff = map_dbl(data, ~max(.$diff))) %>% 
-    summarize(max_d = quantile(max_diff, 0.999)) %>% 
-    pull(max_d)
-) * c(-0.1, 1)
-```
-
-```{r}
-#| results: hide
-
-# Clear memory space
-rm(cranio_matrix, newdata_cranio_age)
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
 
 ## Model Fitting without Boundary
 
@@ -1828,103 +723,18 @@ To test the model fit process, we take a subset of the data, only keeping the fi
 ```{r}
 #| label: prelim-film-loop
 
-# Run loop over individuals and potential penalty constants
-film_loop_df <- NULL
+## Plot results from model using loop, without boundary
 
-for(i in 1:nrow(so_test_df)){
-  for(j in 1:nrow(so_constants_film)){
-    
-    # Data to fit model on
-    d <- so_test_df$data[[i]]
-    
-    # File name to identify output
-    f <- so_test_df$fname[i]
-    
-    # Matrix helpful for influence and coefficients
-    reg_mx_film <- so_constants_film$visor[[j]]
-    
-    trace_H_film <- so_constants_film$hat_trace[[j]]
-    
-    # Outcome vector
-    soap_y <- d$diff
-    
-    # Coefficient estimates
-    soap_b_film <- reg_mx_film %*% soap_y
-    
-    # Fitted values and square residuals
-    soap_fit <- so_X_film %*% soap_b_film
-    soap_sqresid <- (soap_y - soap_fit)^2
-    
-    # GCV score
-    soap_gcv <- (so_n * sum(soap_sqresid)) / (so_n - trace_H_film)^2
-    
-    out_dl <- tibble_row(
-      "fname" = f,
-      "sp" = so_constants_film$sp[[j]],
-      "beta" = list(soap_b_film), 
-      "fit" = list(soap_fit), 
-      "gcv" = soap_gcv)
-    
-    film_loop_df %<>% bind_rows(out_dl)
-  }}
-
-# Add fusion type to this output
-film_loop_df %<>% 
-  left_join(so_test_df %>% select(-data))
-  
-
-# Plot GCV from test models
-film_loop_gcv_plot <- ggplot(film_loop_df) +
-  geom_line(aes(x = sp, y = gcv)) +
-  facet_wrap(~fusion_type, scales = "free_y") +
-  scale_x_continuous(transform = "log10")
-
+# Plot GCV from grid search
 film_loop_gcv_plot
 
-# Take model with lowest GCV for each patient
-film_loop_optim <- film_loop_df %>% 
-  arrange(fname, gcv, desc(sp)) %>% 
-  group_by(fname) %>% 
-  slice(1) %>% 
-  ungroup() %>% 
-  left_join(so_test_df, by = c("fname", "fusion_type"))
-
+# Report results from lowest GCV model for each patient
 kbl(film_loop_optim %>% 
       select(fname, fusion_type, sp, gcv), 
     caption = "First Subset: Optimal Fit for each Patient") %>% 
   kable_styling(full_width = F)
 
-# Extract data and fitted values for plotting
-film_loop_optim_fit <- film_loop_optim %>% 
-  select(fname, fusion_type, fit, data) %>% 
-  unnest(c(fit, data))
-
-# Plot model with lowest GCV for each patient
-plot_loop_film <- ggplot(film_loop_optim_fit) +
-  geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
-  labs(x = NULL, y = NULL, fill = "Pred. Growth",
-       title = "Interior using Loop") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fusion_type, nrow = 1)
-
-# Plot actual observations
-plot_so_test_data <- ggplot(so_test_df %>% unnest(data)) +
-  geom_raster(aes(x = row, y = col, fill = diff)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
-  labs(x = NULL, y = NULL, fill = "Growth",
-       title = "True Data") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fusion_type, nrow = 1)
-
-# Combine and print
-loop_film_both <- ggarrange(plot_loop_film, 
-                            plot_so_test_data, 
-                            ncol = 1)
+# Plot predictions from loop model without boundary next to actual data
 loop_film_both
 
 ```
@@ -1933,68 +743,21 @@ loop_film_both
 
 Next, we try to replicate this process by nesting everything within a dataset.
 
-```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
 
 ```{r}
 #| label: prelim-film-map
 
-# Add model fits to data frame
-film_map_df <- so_test_df %>%
-  # Expand data to one row per patient and penalty constant
-  mutate(constants = list(so_constants_film)) %>%
-  unnest(constants) %>% 
-  # Estimate coefficients
-  mutate(coeffs = map2(visor, data,
-                       ~.x %*% .y$diff)) %>% 
-  # Fitted values
-  mutate(fit = map(coeffs, ~ so_X_film %*% .x)) %>% 
-  # Square residuals
-  mutate(ssr = map2_dbl(data, fit,
-                        ~ sum((.x$diff - .y)^2))) %>% 
-  # GCV Score
-  mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
+# Plot GCV for these models
+film_map_gcv_plot
 
-# Extract best model by GCV
-film_map_optim <- film_map_df %>% 
-  arrange(fname, gcv, desc(sp)) %>% 
-  group_by(fname) %>% 
-  slice(1) %>% 
-  ungroup()
-
+# Report best GCV models
 kbl(film_map_optim %>% 
       select(fname, fusion_type, sp, gcv), 
     caption = "First Subset: Optimal Fit by Map/Mutate") %>% 
   kable_styling(full_width = F)
 
-# Extract data and fitted values for plotting
-film_map_optim_fit <- film_map_optim %>% 
-  select(fname, fusion_type, fit, data) %>% 
-  unnest(c(fit, data))
-
-# Plot model with lowest GCV for each patient
-plot_map_nobound <- ggplot(film_map_optim_fit) +
-  geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
-  labs(x = NULL, y = NULL, 
-       fill = "Pred. Growth",
-       title = "Predictions: Interior Only") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fusion_type, nrow = 1)
-
-# Combine and print
-map_film_both <- ggarrange(plot_map_nobound, 
-                           plot_so_test_data, 
-                           ncol = 1)
+# Plot predictions for nested model fitting without boundary, and actual data
 map_film_both
-
 ```
 
 ## Model Fitting with Boundary
@@ -2004,92 +767,9 @@ map_film_both
 To test the model fit process, we take a subset of the data, only keeping the first appearance of each suture fusion type. We then run a nested for loop to fit the soap film model on each image and for each potential smoothing penalty constant. Plots of the GCV and details for the optimal fits are below.
 
 ```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = ls(pattern = "_film"))
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
 #| label: prelim-soap-loop
 
-# Run loop over individuals and potential penalty constants
-soap_loop_df <- NULL
-
-for(i in 1:nrow(so_test_df)){
-  
-  # Data to fit model on
-  d <- so_test_df$data[[i]]
-  
-  # File name to identify output
-  f <- so_test_df$fname[i]
-  
-  # Outcome vector
-  soap_y <- d$diff
-  
-  df_i <- NULL
-  
-  for(j in 1:nrow(so_constants)){
-    
-    # Matrix helpful for influence and coefficients
-    reg_mx <- so_constants$visor[[j]]
-    
-    trace_H <- so_constants$hat_trace[j]
-    
-    # Coefficient estimates
-    soap_b <- reg_mx %*% soap_y
-    
-    # Fitted values and square residuals
-    soap_fit <- so_X %*% soap_b
-    soap_sqresid <- (soap_y - soap_fit)^2
-    
-    # GCV score
-    soap_gcv <- (so_n * sum(soap_sqresid)) / (so_n - trace_H)^2
-    
-    # Add to image dataset
-    df_row_j <- tibble_row(
-      "sp_bound" = so_constants$sp_bound[[j]],
-      "sp_film" = so_constants$sp_film[[j]],
-      "beta" = list(soap_b), 
-      "fit" = list(soap_fit), 
-      "gcv" = soap_gcv)
-    
-    df_i %<>% bind_rows(df_row_j)
-  }
-  
-  # Keep all GCV values
-  df_i_gcv <- df_i %>% 
-    select(-c(beta, fit)) %>% 
-    rename_with(.cols = everything(), ~paste0(., "_all"))
-  
-  # Sort so best GCV / most smooth is on top
-  df_i %<>% 
-    arrange(gcv, desc(sp_film), desc(sp_bound))
-  
-  # Extract best model; add all gcv scores
-  out_df <- df_i %>% 
-    slice(1) %>% 
-    mutate("fname" = f, .before = everything()) %>% 
-    mutate(all_gcv = list(df_i_gcv))
-  
-  # Append to final data
-  soap_loop_df %<>% bind_rows(out_df)
-}
-
-# Add patient info to output
-soap_loop_df %<>% left_join(so_test_df, by = c("fname"))
-
-# Plot GCV from test models
-soap_loop_gcv_plot <- ggplot(soap_loop_df %>% 
-                               unnest(all_gcv)) +
-  geom_raster(aes(x = sp_bound_all, y = sp_film_all, fill = gcv_all)) +
-  facet_wrap(~fusion_type, scales = "free_y") +
-  scale_x_continuous(transform = "log10") +
-  scale_y_continuous(transform = "log10") +
-  scale_fill_continuous(transform = "log")
-
+# Plot GCV from model with boundary fit in loop
 soap_loop_gcv_plot
 
 # Print model with lowest GCV
@@ -2100,27 +780,7 @@ kbl(soap_loop_df %>%
     digits = 8) %>% 
   kable_styling(full_width = F)
 
-# Extract data and fitted values for plotting
-soap_loop_fit <- soap_loop_df %>% 
-  select(fname, fusion_type, fit, data) %>% 
-  unnest(c(fit, data))
-
-# Plot model with lowest GCV for each patient
-plot_loop_soap <- ggplot(soap_loop_fit) +
-  geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
-  labs(x = NULL, y = NULL, 
-       fill = "Pred. Growth",
-       title = "Predictions Using Loop") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fusion_type, nrow = 1)
-
-# Combine and print
-loop_soap_both <- ggarrange(plot_loop_soap, 
-                            plot_so_test_data, 
-                            ncol = 1)
+# Plot predictions from model with boundary fit in loop, and actual data
 loop_soap_both
 
 ```
@@ -2130,124 +790,19 @@ loop_soap_both
 Next, we replicate this process by nesting everything within a dataset.
 
 ```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
-
-```{r}
 #| label: prelim-soap-map
 
-bound_cols <- which(apply(cranio_soap$S[[1]], 2, sum) != 0)
-film_cols <- which(apply(cranio_soap$S[[2]], 2, sum) != 0)
-
-# Add model fits to data frame
-soap_map_df <- so_test_df %>%
-  # Map over every image
-  mutate(
-    model = map(
-      data,
-      function(d){
-        
-        # Fit estimates for every combination of penalty constants
-        fits <- so_constants %>% 
-          select(-visor) %>% 
-          # Estimate coefficients
-          mutate(coeffs = map(constant_row,
-                              ~so_constants$visor[[.x]] %*% d$diff)) %>% 
-          # Fitted values
-          mutate(fit = map(coeffs, ~ so_X %*% .x),
-                 fit_bound = map(coeffs, 
-                                 ~ so_X[, bound_cols] %*% .x[bound_cols]),
-                 fit_int = map(coeffs, 
-                               ~ so_X[, film_cols] %*% .x[film_cols])) %>% 
-          # Sum of square residuals
-          mutate(ssr = map_dbl(fit, ~sum((d$diff - .x)^2))) %>% 
-          # GCV Score
-          mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
-        
-        # Keep the GCV scores for all combinations of constants
-        fits_gcv <- fits %>% 
-          select(sp_bound, sp_film, gcv) %>% 
-          rename_with(.cols = everything(), ~paste0(.x, "_all"))
-        
-        # Keep the optimal model (lowest GCV -> smoothes interior -> smoothest boundary)
-        image_model <- fits %>%
-          arrange(gcv, desc(sp_film), desc(sp_bound)) %>% 
-          slice(1) %>% 
-          select(-c(hat_trace, constant_row)) %>% 
-          # Append all GCV scores
-          mutate(all_scores = list(fits_gcv)) %>% 
-          tibble_row()
-        
-        return(image_model)
-      }
-    )
-  )
-
-# Extract all model components
-soap_map_df %<>% 
-  unnest_wider(model) %>% 
-  unnest(c(coeffs, fit, fit_bound, fit_int))
-
+# Print results from nested model fits
 kbl(soap_map_df %>% 
       select(fname, fusion_type, sp_bound, sp_film, gcv), 
     caption = "First Subset: Optimal Fit by Map/Mutate",
     digits = 8) %>% 
   kable_styling(full_width = F)
 
-# Extract data and fitted values for plotting
-so_test_fit <- soap_map_df %>% 
-  select(fname, fusion_type, fit, fit_bound, fit_int, data) %>% 
-  unnest(c(fit, fit_bound, fit_int, data)) %>% 
-  mutate(across(matches("fit"), as.numeric)) %>% 
-  # Compare separate components
-  mutate(fit_sep = fit_bound + fit_int,
-         fit_comp = (fit - fit_sep)^2)
-
-# Full value range
-
-
-# Plot model with lowest GCV for each patient
-plot_map_soap <- ggplot(so_test_fit) +
-  geom_raster(aes(x = row, y = col, fill = fit)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
-  labs(x = NULL, y = NULL, 
-       fill = "Pred. Growth",
-       title = "Sample Predictions") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom") +
-  facet_wrap(~fusion_type, nrow = 1)
-
-# Combine and print
-map_soap_both <- ggarrange(plot_map_soap, 
-                           plot_so_test_data, 
-                           ncol = 1)
+# Plot predictions from model with boundary fit in nested data, and actual data
 map_soap_both
 
-### Compare predictions with only bound, only interior, both splines, and truth
-plot_map_build <- so_test_fit %>% 
-  pivot_longer(c(fit_int, fit_bound, fit, diff)) %>% 
-  mutate(name_cln = fct_recode(fct_inorder(name),
-                               "Data" = "diff",
-                               "Interior" = "fit_int",
-                               "Boundary" = "fit_bound",
-                               "Soap Film" = "fit"),
-         ) %>% 
-  ggplot() +
-  geom_raster(aes(x = row, y = col, fill = value)) +
-  scale_fill_continuous_divergingx(palette = "RdYlBu", rev = TRUE,
-                                   l3 = 0, p3 = 2) +
-  labs(x = NULL, y = NULL, fill = "Pred. Growth", 
-       title = "Predictions") +
-  facet_grid(name_cln ~ fusion_type) + 
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom")
-
+# Plot predictions from nested models with and without boundary, plus data
 plot_map_build
 ```
 
@@ -2269,55 +824,7 @@ gc(verbose = F)
 ```{r}
 #| label: individual-soap-models
 
-if(DO_INDIV_SOAPS){
-
-# Add to existing models data set
-cranio_models %<>%
-# Map over every image
-  mutate(
-    model = map(
-      data,
-      function(d){
-        
-        # Fit estimates for every combination of penalty constants
-        fits <- so_constants %>% 
-          select(-visor) %>% 
-          # Estimate coefficients
-          mutate(coeffs = map(constant_row,
-                              ~so_constants$visor[[.x]] %*% d$diff)) %>% 
-          # Fitted values
-          mutate(fit = map(coeffs, ~ so_X %*% .x)) %>% 
-          # Sum of square residuals
-          mutate(ssr = map_dbl(fit, ~sum((d$diff - .x)^2))) %>% 
-          # GCV Score
-          mutate(gcv = (so_n * ssr) / (so_n - hat_trace)^2)
-        
-        # Keep the GCV scores for all combinations of constants
-        fits_gcv <- fits %>% 
-          select(sp_bound, sp_film, gcv) %>% 
-          rename_with(.cols = everything(), ~paste0(.x, "_all"))
-        
-        # Keep the optimal model (lowest GCV -> smoothes interior -> smoothest boundary)
-        image_model <- fits %>%
-          arrange(gcv, desc(sp_film), desc(sp_bound)) %>% 
-          slice(1) %>% 
-          select(-c(hat_trace, constant_row)) %>% 
-          # Append all GCV scores
-          mutate(all_scores = list(fits_gcv)) %>% 
-          tibble_row()
-        
-        return(image_model)
-      }
-    )
-  )
-  
-  saveRDS(cranio_models, 
-          file = here::here("intermediate", "individual_soap_film_df.rds"))
-  
-} else {
-  cranio_models <- readRDS(
-    file = here::here("intermediate", "individual_soap_film_df.rds"))
-}
+source(here("source", "12_fit_soap_film_gcv_individual"))
 
 ```
 
@@ -2330,33 +837,6 @@ We create a dataset containing only the demographics and estimated coefficients 
 rm(so_constants)
 rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
 gc(verbose = F)
-```
-
-```{r}
-#| label: soap-individuals-data
-
-# Extract all model components
-cranio_models %<>% 
-  unnest_wider(model) %>% 
-  unnest(c(coeffs, fit))
-
-# Extract coefficient estimates
-cranio_models_beta <- cranio_models %>% 
-  select(fname, coeffs) %>% 
-  mutate(coeffs = map(coeffs, as.vector)) %>% 
-  rename(beta = coeffs) %>% 
-  left_join(cranio_sub, by = "fname") %>% 
-  left_join(fusion_dict, by = "fusion_type") %>% 
-  select(-beta, everything(), beta) %>% 
-  unnest_wider(beta, names_sep = "_", simplify = T)
-
-# Save coefficients as csv
-write_csv(cranio_models_beta, 
-          here::here("intermediate", "individual_soap_coeffs.csv"))
-
-# Save estimator requirements as RData
-save(cranio_models_beta, so_X,
-     file = here::here("intermediate", "individual_soap_film_fits.rda"))
 ```
 
 # Bayesian Soap Film {#sec-bayes-soap}
@@ -2412,266 +892,14 @@ $$
 \end{aligned}
 $$
 
-## Gibbs Penalized Regression function
-
-```{r}
-#| label: bayesian-regression-function
-
-### Write Gibbs sampler for Bayesian linear regression
-
-# Notes:
-# - Assumes that each penalty matrix is the full K x K but is block diagonal
-# - Assumes at least one set of penalized terms
-# - Assumes one distinct smoothing parameter lambda for each S penalty matrix
-# - If there are unpenalized terms, assumes one matrix is unpenalized
-# - Assumes that the one unpenalized matrix is the first in the list
-
-lm_penalized_gibbs <- function(
-    y, X, # Data
-    S, has_unpenalized = FALSE, # Penalty matrices
-    sigmasq0, lambda0, beta0, # Default parameters
-    a_pri, b_pri, c_pri, d_pri, # Prior hyperparameters
-    iters = 1e4, burn_pct = 0.1 # MCMC parameters
-){
-  
-  # Set up time tracking
-  time_check <- Sys.time()
-  time_pts <- c("start" = time_check)
-  timer <- c("setup" = 0,
-             "lambda_s" = 0,
-             "beta_update_c" = 0,
-             "x_inverse" = 0,
-             "beta_moments" = 0,
-             "beta_draw" = 0,
-             "sigma2_update" = 0,
-             "lambdas_update" = 0)
-  
-  ### Reformat penalty matrix
-  if(is.matrix(S)){ S <- list(S) }
-  
-  ### Calculate dimensions
-  
-  ## Design matrix
-  K <- ncol(X)
-  N <- nrow(X)
-  
-  stopifnot(length(y) == N)
-  
-  ## Iterations of burn-in
-  iters_burn <- ceiling(iters * burn_pct)
-  
-  ## Penalty dimensions
-  
-  # number of penalties
-  S_blocks <- length(S)
-  num_penals <- S_blocks - as.numeric(has_unpenalized)
-
-  # non-zero columns in each penalty matrix
-  S_block_cols <- map(S, ~which(apply(., 2, sum) != 0))
-  
-  # number of parameters for each penalty
-  S_block_Ks <- map_dbl(S_block_cols, length)
-  
-  # First number of parameters might not impact any lambda; if so, remove it
-  if(has_unpenalized){ S_block_Ks <- S_block_Ks[-1] }
-  
-  ### Initialize hyperparameters
-  
-  # Assign initial values
-  sigmasq <- sigmasq0
-  lambda <- rep_len(lambda0, num_penals)
-  beta <- rep_len(beta0, K)
-  
-  # Initialize beta moments before update
-  beta_expect <- beta
-  beta_var <- diag(K)
-  xtx_plus_pen <- diag(K)
-  
-  # Compute hyperparameters that don't update (gamma / Igamma shapes)
-  a_post <- N/2 + K/2 + a_pri
-  c_post <- S_block_Ks/2 + c_pri
-  
-  ### Create objects to save output
-  
-  # Posterior samples
-  beta_out <- array(0, dim = c(iters - iters_burn, K))
-  sigmasq_out <- array(0, dim = c(iters - iters_burn, 1))
-  lambda_out <- array(0, dim = c(iters - iters_burn, num_penals))
-  
-  # Burn-in period
-  beta_burn <- array(0, dim = c(iters_burn, K))
-  sigmasq_burn <- array(0, dim = c(iters_burn, 1))
-  lambda_burn <- array(0, dim = c(iters_burn, num_penals))
-  
-  timer["setup"] <- timer["setup"] + 
-    difftime(Sys.time(), time_check, units = "secs")
-  time_check <- Sys.time()
-  
-  ### Run MCMC loop
-  
-  for(iter in 1:iters){
-    
-    # Output on checkpoints
-    if(iter %% iters_burn == 0) cat("at turn", iter, "\n")
-    
-    ## (1) Update beta (coefficients)
-    
-    # Full penalty matrix including lambdas
-    lambda_S_list <- if(has_unpenalized){
-      # If there are unpenalized terms, do not multiply 1st matrix by any lambda
-      c(
-        S[1],
-        map2(lambda, S[-1],
-             function(l_const, s_mx){
-               l_const * s_mx
-             })
-        )
-    } else {
-      # If no unpenalized terms, scale by one lambda for each penalty matrix
-      map2(lambda, S,
-           function(l_const, s_mx){
-             l_const * s_mx
-           })
-    }
-    
-    # Sum together these individual (lambda * S) block diagonal matrices
-    lambda_S <- Reduce("+", lambda_S_list)
-    
-    timer["lambda_s"] <- timer["lambda_s"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    # Call to Cpp function for beta update
-    penalized_beta_inplace(
-      y = y, X = X, lambda_S = lambda_S, sigmasq = sigmasq,
-      beta_expect, 
-      beta_var, 
-      xtx_plus_pen
-    )
-    
-    timer["beta_update_c"] <- timer["beta_update_c"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    # Generate new beta sample
-    beta <- t(rmvnorm(n = 1, beta_expect, beta_var))
-    
-    timer["beta_draw"] <- timer["beta_draw"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    ## (2) Update sigma^2 (residual variance)
-    
-    # 2nd parameter of inverse gamma
-    b_post <- 
-      b_pri - crossprod(y, X) %*% beta + 
-      0.5 * (sum(y^2) + crossprod(beta, xtx_plus_pen) %*% beta)
-    
-    # Generate new sigma squared sample
-    precision <- rgamma(1, a_post, b_post)
-    sigmasq <- 1 / precision
-    
-    timer["sigma2_update"] <- timer["sigma2_update"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    ## (3) Update lambda (beta function smoothness factor)
-    
-    # Calculate posterior gamma shape
-    d_post <- map(
-      # Exclude any unpenalized terms from posterior
-      if(has_unpenalized){ S[-1] } else { S },
-      function(S_j){
-        (1 / (2 * sigmasq)) * crossprod(beta, S_j) %*% beta + d_pri
-      })
-    
-    # Update lambdas
-    lambda <- map2_dbl(c_post, d_post,
-                       function(c_new, d_new){
-                         rgamma(1, c_new, d_new)
-                       })
-    
-    timer["lambdas_update"] <- timer["lambdas_update"] + 
-      difftime(Sys.time(), time_check, units = "mins")
-    time_check <- Sys.time()
-    
-    ## Save results
-    iter_post <- iter - iters_burn
-    
-    if(iter_post > 0){
-      beta_out[iter_post,] <- beta
-      sigmasq_out[iter_post,] <- sigmasq
-      lambda_out[iter_post,] <- lambda
-    } else{
-      beta_burn[iter,] <- beta
-      sigmasq_burn[iter,] <- sigmasq
-      lambda_burn[iter,] <- lambda
-    }
-  }
-  
-  time_pts <- c(time_pts, "end" = Sys.time())
-  timer["total"] <- difftime(time_pts["end"], time_pts["start"], units = "secs")
-  timer <- enframe(timer, name = "step", value = "secs")
-  
-  return(list("beta" = beta_out,
-              "sigma_sq" = sigmasq_out,
-              "lambda" = lambda_out,
-              "burn_beta" = beta_burn,
-              "burn_sigma_sq" = sigmasq_burn,
-              "burn_lambda" = lambda_burn,
-              "start-stop" = time_pts,
-              "timing" = timer))
-}
-```
-
 ## Fit on individual model {#sec-bayes-individual}
 
 ```{r}
-#| label: bayes-soap-film-sample
-#| results: hide
+#| label: bayes-soap-film-test
 
-### Run Gibbs sampler for soap film
-
-# Set data to train on, especially outcome
-data_eg <- so_test_fit %>% 
-  filter(fusion_type == "Sagittal") %>% 
-  filter(fname == first(fname))
-
-y_mx <- data_eg$diff
-
-# Set penalty matrices
-S_mx <- cranio_soap$S
-
-# Set default parameters
-def_pars <- c(
-  "beta" = 0.0,
-  "sigma_sq" = var(y_mx),
-  "lambda" = 0.1,
-  "a" = 1.0,
-  "b" = 1.0,
-  "c" = 1.0,
-  "d" = 1.0
-)
-
-# Set iterations
-bayes_soap_iters <- 1e3
-
-set.seed(70)
-
-# Run function
-soap_bayes1 <- lm_penalized_gibbs(
-  y = y_mx, X = so_X, S = S_mx,
-  beta0 = def_pars["beta"], 
-  sigmasq0 = def_pars["sigma_sq"], 
-  lambda0 = def_pars["lambda"], 
-  a_pri = def_pars["a"],
-  b_pri = def_pars["b"],
-  c_pri = def_pars["c"],
-  d_pri = def_pars["d"],
-  iters = bayes_soap_iters, 
-  burn_pct = 0.1
-)
+source(here("source", "13_fit_soap_film_bayes.R"))
 ```
+
 
 ### MCMC Diagnostics {#sec-mcmc-diagnostics}
 
@@ -2680,73 +908,15 @@ Trace plots show that the parameters converge to a stable distribution quickly a
 ```{r}
 #| label: MCMC-diagnostics
 
-# Check timing
-mcmc_time <- soap_bayes1$timing %>% 
-  mutate(pct = as.numeric(secs) / last(secs))
-
+# Report timing of Bayesian soap film model
 kbl(mcmc_time %>% mutate(pct = scales::label_percent(accuracy = 0.1)(pct)), 
     caption = "Loop Timing") %>% 
   kable_styling(full_width = F)
 
-# Make accessible all parameters together
-
-soap_bayes1_tr <- imap(
-  soap_bayes1 %>% 
-    list_modify("timing" = zap(), 
-                "start-stop" = zap()),
-  function(x, xn){
-    x <- as_tibble(x)
-    if(ncol(x) == 1){
-      names(x) <- xn
-    } else {
-      names(x) <- paste0(xn, ".", 1:ncol(x))
-    }
-    x %<>% 
-      mutate(iter = 1:n(), .before = everything()) %>% 
-      pivot_longer(-iter, 
-               names_pattern = "(burn_)?(.*)",
-               names_to = c("draw", "name"))
-    
-    x
-  }
-) %>% 
-  unname() %>% 
-  list_rbind() %>% 
-  mutate(draw_cat = if_else(draw == "burn_", 
-                            "Burn-In", "Posterior"))
-
-# Add default parameters to this table
-trace_default <- soap_bayes1_tr %>% 
-  filter(draw_cat == "Burn-In") %>% 
-  distinct(draw_cat, name) %>% 
-  filter(!str_detect(name, "beta")) %>% 
-  mutate(
-    iter = 0,
-    value = case_when(
-      str_detect(name, "sigma_sq") ~ def_pars["sigma_sq"],
-      str_detect(name, "lambda") ~ def_pars["lambda"],
-      T ~ NA
-    ))
-
-soap_bayes1_tr %<>% bind_rows(trace_default)
-
-# Trace plot of sigma
-sigma_trace <- ggplot(soap_bayes1_tr %>% 
-                        filter(str_detect(name, "sigma_sq"))) +
-  geom_line(aes(x = iter, y = value)) +
-  facet_wrap(~ name + draw_cat, ncol = 2, scales = "free", 
-             labeller = \(x) label_value(x, multi_line = F))
-
+# Trace plot for variance term
 sigma_trace
 
-# Trace plot of lambdas
-lambda_trace <- ggplot(soap_bayes1_tr %>% 
-                         filter(str_detect(name, "lambda"))) +
-  geom_line(aes(x = iter, y = value), alpha = 0.5) +
-  facet_wrap(~ name + draw_cat, ncol = 2, scales = "free", 
-             labeller = \(x) label_value(x, multi_line = F)) +
-  theme(legend.position = "bottom")
-
+# Trace plot for smoothness constants
 lambda_trace
 ```
 
@@ -2756,47 +926,15 @@ lambda_trace
 #| fig.height: 50
 
 # Trace plot of betas
-beta_trace <- ggplot(soap_bayes1_tr %>% 
-                         filter(str_detect(name, "beta"))) +
-  geom_line(aes(x = iter, y = value), alpha = 0.5) +
-  theme(legend.position = "bottom") +
-  facet_wrap(~ name + draw_cat, ncol = 2, scales = "free", 
-             labeller = \(x) label_value(x, multi_line = F))
-
 beta_trace
 ```
-
 
 ### Visualize predictions {#sec-bayes-soap-plot}
 
 ```{r}
 #| label: bayes-soap-predictions
 
-# Extract posterior mean coefficients
-soap_bayes1_betas <- colMeans(soap_bayes1$beta)
-
-# Calculate predictions from these coefficients
-soap_bayes1_preds <- so_X %*% soap_bayes1_betas
-
-# Add predictions to data
-data_eg %<>% mutate(fit_bayes = as.numeric(soap_bayes1_preds))
-
-data_toplot <- data_eg %>% 
-  select(row, col, diff, fit_gcv = fit, fit_bayes) %>% 
-  pivot_longer(-c(row, col))
-
-# Plot truth and predictions from Bayesian example
-soap_bayes1_plot <- ggplot(data_toplot) +
-  geom_raster(aes(x = row, y = col, fill = value)) +
-  scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
-  facet_wrap(~name, ncol = 1) +
-  labs(x = NULL, y = NULL, 
-       fill = "Growth",
-       title = "Bayesian Prediction Comparison") +
-  coord_fixed() +
-  theme_void() +
-  theme(legend.position = "bottom")
-
+# Plot predictions and actual data from 1 Bayesian soap film
 soap_bayes1_plot
 ```
 
@@ -2825,39 +963,9 @@ We can check these assumptions based on the coefficients we estimated for each i
 The assumptions appear to be reasonable, although there may be significant variance $\eta_{ik}$. This could be especially problematic for larger ages, where there are significantly fewer observations and are often no observations for less common suture fusion types.
 
 ```{r}
-#| label: set-up-coeff-data
-
-## Load all coefficients previously fit, along with demographics
-gcv_coeffs <- read_csv(here::here("intermediate", "individual_soap_coeffs.csv"))
-
-cranio_coeff_df <- gcv_coeffs %>% 
-  mutate(fusion_type = fct_infreq(fusion_type),
-         sex = factor(sex, levels = c(0,1)))
-
-```
-
-```{r}
 #| label: plot-coeff-demographics
 #| fig.width: 10
 #| fig.height: 15
-
-coeff_toplot <- cranio_coeff_df %>% 
-  pivot_longer(cols = matches("beta"),
-               names_to = "beta_id",
-               values_to = "beta_val") %>% 
-  mutate(beta_num = as.numeric(str_remove_all(beta_id, "beta_")))
-
-coeff_plots <- ggplot(coeff_toplot %>% 
-                        filter(beta_num %in% so_plot_knots),
-                      aes(x = age, y = beta_val, color = fusion_type)) +
-  geom_point(alpha = 0.2) +
-  geom_smooth(alpha = 0.5) +
-  geom_rug(inherit.aes = F, aes(x = age), color = "gray50") +
-  scale_color_discrete(palette = fusion_color_dict$color) +
-  facet_grid(beta_id ~ fusion_type, scales = "free_y") +
-  theme_minimal() +
-  theme(legend.position = "none") +
-  labs(x = "Age (Days)", y = "Soap Basis Coefficient")
 
 coeff_plots
 ```
@@ -2872,256 +980,13 @@ We set up the design matrix and the penalty matrices to match the Gibbs sampler 
 
 First, we construct a full "reference" matrix and penalty matrix using `mgcv::smooth.construct2`.
 
-```{r}
-#| label: create-coefficient-smooth
-
-### Create cubic regression basis splines for age
-
-# Set rank
-knots_per_fusion <- 10
-
-# Construct smooth without constraint or factor levels
-cranio_coeff_smooth <- smooth.construct2(
-  s(age, bs = "cr", k = knots_per_fusion),
-  data = cranio_coeff_df, knots = NULL
-)
-
-# Attach name of the dataset to this smooth
-attr(cranio_coeff_smooth, "data") <- "cranio_coeff_df"
-```
-
-Second, we write a function that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
-
-```{r}
-#| label: coefficient-design-matrix
-
-### Write functions to set up design matrix 
-##  - Given a constructed smooth (with constraint applied), factor variable, and new data:
-## .. and generate full design matrix for new data,
-## .. assuming "reference coding" with reference spline and difference functions
-
-## 1) Given smooth, subtract column means and drop last column
-apply_sweep_and_drop <- function(sm, drop_col = NULL, newdata = NULL){
-
-  # Extract design matrix
-  sm_X0 <- sm$X
-
-  # Calculate column means
-  sm_means <- colMeans(sm_X0)
-
-  # Identify number of columns
-  sm_k <- length(sm_means)
-  
-  # Determine whether column to drop is provided
-  if(is.null(drop_col)) drop_col <- sm_k
-  
-  # Determine whether to sweep and drop from original or new matrix
-  if(is.null(newdata)){
-    nd_X0 <- sm_X0
-  } else {
-    nd_X0 <- PredictMat(sm, data = newdata)
-  }
-
-  # Subtract these from design matrix AND remove last column
-  X_ref <- sweep(nd_X0[, -drop_col], 2, STATS = as.array(sm_means[-drop_col]))
-
-  # Locate full penalty matrix
-  sm_S0 <- sm$S[[1]]
-
-  # Filter to subset corresponding to remaining design matrix
-  S_ref <- sm_S0[-drop_col, -drop_col]
-
-  # Export
-  out <- list("X" = X_ref,
-              "S" = S_ref,
-              "means" = sm_means,
-              "col_dropped" = drop_col)
-
-  out
-}
-
-## 2) Given constructed smooth and a factor, make full design and penalty
-##    - assume "reference" coding for splines
-make_reference_coded_splines <- function(sm, drop_col = NULL, newdata = NULL, 
-                                         by_var){
-  
-  # Apply constraint to smooth object
-  constrained_list <- apply_sweep_and_drop(sm = sm, 
-                                           drop_col = drop_col, 
-                                           newdata = newdata)
-  
-  # Get data with factor variable: either from the smooth or a new data frame
-  if(is.null(newdata)){
-    nd <- get(attr(sm, "data"))
-  } else {
-    nd <- newdata
-  }
-  
-  # Define vector of factor assignments in data
-  by_vec <- nd[[by_var]]
-  
-  # Define list of effect values for which we need separate splines
-  by_effects <- levels(by_vec)[-1]
-  
-  # Generate one design matrix for each effect
-  X_by <- map(by_effects, 
-              ~ as.numeric(by_vec == .x) * constrained_list$X)
-  
-  # Merge with original spline basis
-  X_splines <- Reduce(cbind, x = X_by, init = constrained_list$X)
-  
-  out <- list("X" = X_splines)
-  
-  # Construct penalty matrix for all splines together
-  if(is.null(newdata)){
-    # Define indicator matrix list 
-    # Each matrix is 0 except for a 1 on the diagonal
-    # This 1 represents the block where the penalty matrix S is
-    spline_indicator_list <- map(1:length(levels(by_vec)),
-                                 .f = function(j, z = rep(0, length(levels(by_vec)))){
-                                   z[j] <- 1
-                                   diag(z, nrow = length(z))
-                                 })
-    
-    # For each matrix in the list, take kronecker product with S from the smooth
-    S_splines <- map(spline_indicator_list,
-                     ~kronecker(.x, constrained_list$S))
-    
-    out[["S"]] <- S_splines
-  }
-  out
-}
-
-## 3) Add parametric covariates
-setup_reference_model <- function(sm, drop_col = NULL, by_var, newdata = NULL, 
-                                  param_formula = NULL){
-  
-  # Make spline matrix
-  ref_splines <- make_reference_coded_splines(sm = sm, drop_col = drop_col, 
-                                              by_var = by_var, newdata = newdata)
-  
-  # If there is no parametric formula, add unpenalized intercept
-  if(is.null(param_formula)){
-    design_param <- matrix(1, nrow = nrow(ref_splines$X))
-    
-    # Include 1 x 1 matrix for unpenalized intercept
-    S_unpenal <- matrix(1, 1, 1)
-  } else{
-    # Otherwise, create matrix columns from formula
-    
-    # Get data with parametric variables: if no new data, get it from smooth
-    if(is.null(newdata)){ 
-      nd <- get(attr(sm, "data")) 
-    } else {
-      nd <- newdata
-    }
-    
-    # Create parametric matrix from this new data
-    design_param <- model.matrix(param_formula, nd)
-    colnames(design_param) <- NULL
-    
-    # Create identity matrix for these unpenalized parameters
-    S_unpenal <- diag(nrow = ncol(design_param))
-  }
-  
-  # Merge model matrix with spline matrix for full design matrix
-  X_design <- cbind(design_param, ref_splines$X)
-  
-  out <- list("X" = X_design)
-  
-  if(is.null(newdata)){
-  ## Create full penalty / precision matrix
-  
-  # Add 0's to unpenalized matrix to match size of penalties
-  S_unpenal_full <- as.matrix(bdiag(S_unpenal,
-                                    diag(0, nrow = nrow(ref_splines$S[[1]]))))
-  
-  # Add 0's for penalized matrices at beginning of other matrices
-  S_full_size <- map(ref_splines$S, 
-                     ~as.matrix(
-                       bdiag(
-                         diag(0, nrow = nrow(S_unpenal)), 
-                         .x)))
-  
-  # Append unpenalized chunk to beginning of penalty matrix list
-  S_full <- c(list(S_unpenal_full), S_full_size)
-  
-  out[["S"]] <- S_full 
-  }
-  
-  out
-}
-```
-
-```{r}
-#| results: hide
-
-# Clear memory space
-rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
-gc(verbose = F)
-```
+Second, we write functionss that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
 
 ## Single Basis Coefficient Bayesian Additive Model {#sec-coeff-gibbs}
 
 We use this function to construct the design matrix and penalty matrix list for the Gibbs sampler function. 
 
 To test this model, we use the 38th soap film basis coefficient. This coefficient's basis function is plotted above, and it is in a region that visibly differs between Normative, Sagittal, and Metopic presentations.
-
-
-```{r}
-#| label: fit-basis-coefficient-estimators
-#| results: hide
-
-### Run Gibbs sampler for coefficient models
-
-## Create design and penalty matrices using function above
-coeff_ingredients <- setup_reference_model(
-  sm = cranio_coeff_smooth,
-  by_var = "fusion_type", param_formula = ~sex
-)
-
-# Combine suture fusion penalties so we estimate the same lambda
-coeff_S_combo <- list(coeff_ingredients$S[[1]],
-                      Reduce("+", coeff_ingredients$S[-1]))
-
-save(coeff_ingredients, 
-     file = here::here("intermediate", "demographics_model_matrices.rda"))
-
-# Set 1 covariate as outcome 
-# - (plotted above, should be lower for sagittal and higher for metopic)
-coeff_y <- cranio_coeff_df$beta_38
-
-# Set default parameters
-def_pars_coeff <- c(
-  "beta" = 0.0,
-  "sigma_sq" = var(coeff_y),
-  "lambda" = 0.1,
-  "a" = 1.0,
-  "b" = 1.0,
-  "c" = 1.0,
-  "d" = 1.0
-)
-
-# Set iterations
-bayes_coeff_iters <- 5e3
-
-set.seed(700)
-
-# Run function
-coeff_bayes1 <- lm_penalized_gibbs(
-  y = coeff_y, X = coeff_ingredients$X, 
-  S = coeff_S_combo, has_unpenalized = TRUE,
-  beta0 = def_pars_coeff["beta"], 
-  sigmasq0 = def_pars_coeff["sigma_sq"], 
-  lambda0 = def_pars_coeff["lambda"], 
-  a_pri = def_pars_coeff["a"],
-  b_pri = def_pars_coeff["b"],
-  c_pri = def_pars_coeff["c"],
-  d_pri = def_pars_coeff["d"],
-  iters = bayes_coeff_iters, 
-  burn_pct = 0.1
-)
-```
 
 ## Basis Coefficient MCMC Diagnostics {#sec-coeff-mcmc-diagnostics}
 
@@ -3132,74 +997,15 @@ In particular, we can see that the variance of some of the coefficients is very 
 ```{r}
 #| label: coeff-MCMC-diagnostics
 
-# Check timing
-mcmc_coeff_time <- coeff_bayes1$timing %>% 
-  mutate(pct = as.numeric(secs) / last(secs))
-
+# Report timing of this MCMC
 kbl(mcmc_coeff_time %>% mutate(pct = scales::label_percent(accuracy = 0.1)(pct)), 
     caption = "Loop Timing") %>% 
   kable_styling(full_width = F)
 
-# Make accessible all parameters together
-
-coeff_bayes1_tr <- imap(
-  coeff_bayes1 %>% 
-    list_modify("timing" = zap(), 
-                "start-stop" = zap()),
-  function(x, xn){
-    x <- as_tibble(x)
-    if(ncol(x) == 1){
-      names(x) <- xn
-    } else {
-      names(x) <- paste0(xn, ".", 1:ncol(x))
-    }
-    x %<>% 
-      mutate(iter = 1:n(), .before = everything()) %>% 
-      pivot_longer(-iter, 
-               names_pattern = "(burn_)?(.*)",
-               names_to = c("draw", "name"))
-    
-    x
-  }
-) %>% 
-  unname() %>% 
-  list_rbind() %>% 
-  mutate(draw_cat = if_else(draw == "burn_", 
-                            "Burn-In", "Posterior"),
-         param_num = as.numeric(str_extract(name, "[0-9]+"))) %>% 
-  mutate(param_num = coalesce(param_num, 1))
-
-# Add default parameters to this table
-trace_coeff_default <- coeff_bayes1_tr %>% 
-  filter(draw_cat == "Burn-In") %>% 
-  distinct(draw_cat, name, param_num) %>% 
-  mutate(
-    iter = 0,
-    value = case_when(
-      str_detect(name, "sigma_sq") ~ def_pars_coeff["sigma_sq"],
-      str_detect(name, "lambda") ~ def_pars_coeff["lambda"],
-      str_detect(name, "beta") ~ def_pars_coeff["beta"],
-      T ~ NA
-    ))
-
-coeff_bayes1_tr %<>% bind_rows(trace_coeff_default)
-
-# Trace plot of sigma
-sigma_trace_coeff <- ggplot(coeff_bayes1_tr %>% 
-                        filter(str_detect(name, "sigma_sq"))) +
-  geom_line(aes(x = iter, y = value)) +
-  facet_grid(rows = name ~ draw_cat, scales = "free") +
-  labs(title = "Sigma Squared Trace")
-
+# Plot trace plot of variance
 sigma_trace_coeff
 
-# Trace plot of lambdas
-lambda_trace_coeff <- ggplot(coeff_bayes1_tr %>% 
-                         filter(str_detect(name, "lambda"))) +
-  geom_line(aes(x = iter, y = value), alpha = 0.5) +
-  facet_grid(param_num ~ draw_cat, scales = "free") +
-  labs(title = "Lambda Trace")
-
+# Plot trace of smoothing constant
 lambda_trace_coeff
 ```
 
@@ -3208,13 +1014,7 @@ lambda_trace_coeff
 #| fig.width: 10
 #| fig.height: 20
 
-# Trace plot of betas
-beta_trace_coeff <- ggplot(coeff_bayes1_tr %>% 
-                             filter(str_detect(name, "beta"))) +
-  geom_line(aes(x = iter, y = value), alpha = 0.5) +
-  facet_grid(param_num ~ draw_cat, scales = "free") +
-  labs(title = "Beta Trace")
-
+# Trace plot of demographic effects
 beta_trace_coeff
 ```
 
@@ -3231,69 +1031,10 @@ These credible intervals are very large for rare suture fusion types for high ag
 ```{r}
 #| label: bayes-coefficient-GAM-predictions
 
-### Illustrate coefficient functions from these splines
-
-## Create new data
-
-# Create data shell
-coeff_newdata <- cranio_coeff_df %>% 
-  mutate(min_age= min(age),
-         max_age = max(age)) %>% 
-  distinct(fusion_type, min_age, max_age) %>% 
-  rowwise() %>% 
-  mutate(age = list(seq(min_age, max_age, length.out = 50))) %>% 
-  ungroup() %>% 
-  mutate(sex = list(c(0, 1))) %>% 
-  unnest(age) %>% unnest(sex) %>% 
-  mutate(sex = factor(sex, levels = levels(cranio_coeff_df$sex)))
-
-# Run function to convert this to design matrix
-coeff_new_design <- setup_reference_model(
-  sm = cranio_coeff_smooth, newdata = coeff_newdata,
-  by_var = "fusion_type", param_formula = ~sex
-)$X
-
-## Calculate predictions
-coeff_bayes1_preds <- tcrossprod(coeff_new_design, coeff_bayes1$beta)
-
-coeff_bayes1_pred_int <- t(apply(coeff_bayes1_preds, 1,
-                                 FUN = function(x) matrix(
-                                   c(mean(x), 
-                                     quantile(x, 0.05), 
-                                     quantile(x, 0.95)),
-                                   nrow = 1
-                                 )))
-
-colnames(coeff_bayes1_pred_int) <- c("est", "ll", "ul")
-
-# Add predictions to data
-coeff_newdata %<>% bind_cols(as.data.frame(coeff_bayes1_pred_int))
-
-## Plot truth and predictions from Bayesian example
-coeff_bayes1_plot <- ggplot(coeff_newdata %>% filter(sex == 0),
-                            aes(x = age, y = est, ymin = ll, ymax = ul)) +
-  geom_line(aes(color = fusion_type)) +
-  geom_point(inherit.aes = F, 
-             data = enframe(cranio_coeff_smooth$xp),
-             aes(x = value, y = 0),
-             fill = "yellow", shape = 23) +
-  geom_ribbon(aes(fill = fusion_type), alpha = 0.1) +
-  facet_wrap(~fusion_type, scales = "free_y") +
-  scale_color_discrete(palette = fusion_color_dict$color) +
-  scale_fill_discrete(palette = fusion_color_dict$color) +
-  labs(x = "Age (Days)", y = "Est. Basis Coefficient", 
-       color = "Fusion Type",
-       fill = "Fusion Type",
-       title = "Bayesian Hierarchical Coefficient Functions") +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
+# Plot age effects by fusion type
 coeff_bayes1_plot
 
-# Add y limit so that patterns are more visible
-coeff_bayes1_plot_lim <- coeff_bayes1_plot +
-  coord_cartesian(ylim = max(coeff_y)*c(-0.5, 1.25))
-
+# Plot age effects by fusion type WITH y axis limits
 coeff_bayes1_plot_lim
 ```
 
@@ -3658,280 +1399,6 @@ $$
 ```{r}
 #| label: bayesian-hierarchical-gibbs
 
-### Write Gibbs sampler for Bayesian linear regression
 
-# Notes:
-# - Assumes that each penalty matrix is the full K x K but is block diagonal
-# - Assumes at least one set of penalized terms
-# - Assumes one distinct smoothing parameter lambda for each S penalty matrix
-# - If there are unpenalized terms, assumes exactly one matrix is unpenalized
-# - Assumes that the one unpenalized matrix is the first in the list
-
-hierarchical_penalized_gibbs <- function(
-    outcome_mx, # G
-    basis_mx, # B
-    demo_mx, # W
-    pen_basis, # P_gamma
-    pen_demo, # P_beta
-    basis_has_unpenalized = FALSE, # Controls 1st lambda in basis penalty list
-    demo_has_unpenalized = FALSE, # Controls 1st lambda in demo penalty list
-    gamma0, beta0, sigmasq0, lambda_basis0, tausq0, lambda_demo0, # Default parameters
-    a_sigma_pri, b_sigma_pri, a_gamma_pri, b_gamma_pri,
-    a_tau_pri, b_tau_pri, a_alpha_pri, b_alpha_pri, # Default hyperparameters
-    iters = 1e4, burn_pct = 0.1 # MCMC parameters
-){
-  
-  # Set up time tracking
-  time_check <- Sys.time()
-  time_pts <- c("start" = time_check)
-  timer <- c("setup" = 0,
-             "penalty_total" = 0,
-             "gamma_update_c" = 0,
-             "gamma_draw" = 0,
-             "beta_update_c" = 0,
-             "beta_draw" = 0,
-             "sigma2_update" = 0,
-             "lambdas_basis_update" = 0,
-             "tau2_update" = 0,
-             "lambdas_demo_update" = 0)
-  
-  ### Reformat penalty matrices
-  if(is.matrix(pen_basis)){ 
-    pen_basis <- list(pen_basis) }
-  
-  if(is.matrix(pen_list_demo)){ 
-    pen_demo <- list(pen_demo) }
-  
-  ### Calculate dimensions
-  
-  ## Data matrices: outcome, basis, demographics
-  N <- nrow(outcome_mx)
-  M <- ncol(outcome_mx)
-  K <- ncol(basis_mx)
-  Q <- ncol(demographic_mx)
-  
-  stopifnot(nrow(basis_mx) == M, nrow(demographic_mx) == N)
-  
-  ### Determine what lambdas we need from penalty matrices
-  
-  # number of penalties on spatial basis coefficients
-  pen_blocks_basis <- length(pen_basis)
-  num_penals_basis <- penalty_blocks_basis - as.numeric(basis_has_unpenalized)
-  
-  # number of penalties on demographic coefficients
-  pen_blocks_demo <- length(pen_demo)
-  num_penals_demo <- penalty_blocks_demo - as.numeric(demo_has_unpenalized)
-
-  # non-zero columns in each penalty matrix
-  pen_block_cols_basis <- map(pen_basis, ~which(apply(., 2, sum) != 0))
-  pen_block_cols_demo <- map(pen_demo, ~which(apply(., 2, sum) != 0))
-  
-  # number of parameters for each penalty
-  pen_block_dims_basis <- map_dbl(pen_block_cols_basis, length)
-  pen_block_dims_demo <- map_dbl(pen_block_cols_demo, length)
-  
-  # First number of parameters might not impact any lambda; if so, remove it
-  if(basis_has_unpenalized){ pen_block_dims_basis <- pen_block_dims_basis[-1] }
-  if(demo_has_unpenalized){ pen_block_dims_demo <- pen_block_dims_demo[-1] }
-  
-  ### Data manipulations
-  
-  # Convert outcome matrix to vector
-  outcome_vec <- outcome_mx
-  dim(outcome_vec) <- c(prod(dim(outcome_vec)), 1)
-  
-  # Calculate sum of outcome squared (G transpose * G)
-  outcome_vec_sq <- sum(outcome_vec^2)
-  
-  # Calculate basis matrix squared
-  
-  
-  # Calculate Demographic matrix squared
-  
-  
-  # Calculate basis kron I_N and basis transpose kron I_N
-  
-  
-  # Calculate I_K kron demographic
-  
-  
-  ### Initialize hyperparameters
-  
-  # Assign initial values
-  gamma <- rep_len(gamma0, N*K)
-  beta <- rep_len(beta0, Q*K)
-  
-  sigmasq <- sigmasq0
-  lambda_basis <- rep_len(lambda_basis0, num_penals_basis)
-  
-  tausq <- tausq0
-  lambda_demo <- rep_len(lambda_demo0, num_penals_demo)
-  
-  # Initialize gamma and beta moments before update
-  gamma_expect <- gamma
-  gamma_var <- diag(N*K)
-  basis_sq_plus_pen <- diag(N*K)
-  
-  beta_expect <- beta
-  beta_var <- diag(Q*K)
-  
-  # Compute hyperparameters that don't update (gamma / Igamma shapes)
-  a_sigma_post <- a_sigma_pri + N*M/2 + N*K/2
-  a_gamma_post <- a_gamma_pri + N*pen_block_dims_basis/2
-  a_tau_post <- a_tau_pri + Q*K/2
-  a_alpha_post <- a_alpha_pri + K*pen_block_dims_demo/2
-  
-  ### Create objects to save output
-  
-  ## Set iterations of burn-in
-  iters_burn <- ceiling(iters * burn_pct)
-  
-  # Posterior samples
-  gamma_out <- array(0, dim = c(iters - iters_burn, N, K))
-  beta_out <- array(0, dim = c(iters - iters_burn, Q, K))
-  sigmasq_out <- array(0, dim = c(iters - iters_burn, 1))
-  lambda_basis_out <- array(0, dim = c(iters - iters_burn, num_penals_basis))
-  tausq_out <- array(0, dim = c(iters - iters_burn, 1))
-  lambda_demo_out <- array(0, dim = c(iters - iters_burn, num_penals_demo))
-  
-  # Burn-in period
-  gamma_burn <- array(0, dim = c(iters_burn, N, K))
-  beta_burn <- array(0, dim = c(iters_burn, Q, K))
-  sigmasq_burn <- array(0, dim = c(iters_burn, 1))
-  lambda_basis_burn <- array(0, dim = c(iters_burn, num_penals_basis))
-  tausq_burn <- array(0, dim = c(iters_burn, 1))
-  lambda_demo_burn <- array(0, dim = c(iters_burn, num_penals_demo))
-  
-  timer["setup"] <- timer["setup"] + 
-    difftime(Sys.time(), time_check, units = "secs")
-  time_check <- Sys.time()
-  
-  ### Run MCMC loop
-  
-  for(iter in 1:iters){
-    
-    # Output on checkpoints
-    if(iter %% iters_burn == 0) cat("at turn", iter, "\n")
-    
-    ### Compile "Total" penalty matrices (including lambdas)
-    
-    ## First, total penalty matrix for gamma coefficients
-    
-    # If there are unpenalized terms, do not multiply 1st matrix by any lambda
-    lambda_basis_mult <- if(basis_has_unpenalized){ 
-      c(1, lambda_basis) 
-    } else { lambda_basis }
-    
-    lambda_demo_mult <- if(demo_has_unpenalized){ 
-      c(1, lambda_demo) 
-    } else { lambda_demo }
-    
-    # Multiply block penalty matrices by lambdas
-    pen_basis_lambda <- map2(lambda_basis_mult, pen_basis, ~ .x * .y)
-    
-    pen_demo_lambda <- map2(lambda_demo_mult, pen_demo, ~ .x * .y)
-    
-    # Sum together these individual (lambda * S) block diagonal matrices
-    pen_basis_total <- Reduce("+", pen_basis_lambda)
-    
-    pen_demo_total <- Reduce("+", pen_demo_lambda)
-    
-    timer["penalty_total"] <- timer["penalty_total"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    ## (1) Update gamma (spatial coefficients)
-    
-    # ** [[Write Gamma moments update function]] **
-    
-    timer["gamma_update_c"] <- timer["gamma_update_c"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    # ** [[Write Gamma draw function]] **
-    
-    timer["gamma_draw"] <- timer["gamma_draw"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    ## (2) Update beta (demographic coefficients)
-    
-    # Call to Cpp function for beta update
-    
-    ## ** [[Write new C++ beta moments update function]]
-    
-    timer["beta_update_c"] <- timer["beta_update_c"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    # Generate new beta sample
-    beta <- t(rmvnorm(n = 1, beta_expect, beta_var))
-    
-    timer["beta_draw"] <- timer["beta_draw"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    ## (2) Update sigma^2 (residual variance)
-    
-    # 2nd parameter of inverse gamma
-    b_sigma_post <- 
-      b_pri - crossprod(y, X) %*% beta + 
-      0.5 * (sum(y^2) + crossprod(beta, xtx_plus_pen) %*% beta)
-    
-    # Generate new sigma squared sample
-    precision <- rgamma(1, a_post, b_post)
-    sigmasq <- 1 / precision
-    
-    timer["sigma2_update"] <- timer["sigma2_update"] + 
-      difftime(Sys.time(), time_check, units = "secs")
-    time_check <- Sys.time()
-    
-    ## (3) Update lambda (beta function smoothness factor)
-    
-    # Calculate posterior gamma shape
-    d_post <- map(
-      # Exclude any unpenalized terms from posterior
-      if(has_unpenalized){ S[-1] } else { S },
-      function(S_j){
-        (1 / (2 * sigmasq)) * crossprod(beta, S_j) %*% beta + d_pri
-      })
-    
-    # Update lambdas
-    lambda <- map2_dbl(c_post, d_post,
-                       function(c_new, d_new){
-                         rgamma(1, c_new, d_new)
-                       })
-    
-    timer["lambdas_update"] <- timer["lambdas_update"] + 
-      difftime(Sys.time(), time_check, units = "mins")
-    time_check <- Sys.time()
-    
-    ## Save results
-    iter_post <- iter - iters_burn
-    
-    if(iter_post > 0){
-      beta_out[iter_post,] <- beta
-      sigmasq_out[iter_post,] <- sigmasq
-      lambda_out[iter_post,] <- lambda
-    } else{
-      beta_burn[iter,] <- beta
-      sigmasq_burn[iter,] <- sigmasq
-      lambda_burn[iter,] <- lambda
-    }
-  }
-  
-  time_pts <- c(time_pts, "end" = Sys.time())
-  timer["total"] <- difftime(time_pts["end"], time_pts["start"], units = "secs")
-  timer <- enframe(timer, name = "step", value = "secs")
-  
-  return(list("beta" = beta_out,
-              "sigma_sq" = sigmasq_out,
-              "lambda" = lambda_out,
-              "burn_beta" = beta_burn,
-              "burn_sigma_sq" = sigmasq_burn,
-              "burn_lambda" = lambda_burn,
-              "start-stop" = time_pts,
-              "timing" = timer))
-}
 ```
 
