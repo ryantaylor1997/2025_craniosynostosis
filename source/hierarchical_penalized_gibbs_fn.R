@@ -84,16 +84,17 @@ hierarchical_penalized_gibbs <- function(
   outcome_vec_sq <- sum(outcome_vec^2)
 
   # Calculate basis matrix squared
-
+  basis_sq <- crossprod(basis_mx)
 
   # Calculate Demographic matrix squared
-
+  demo_sq <- crossprod(demo_mx)
 
   # Calculate basis kron I_N and basis transpose kron I_N
-
+  basis_kron <- basis_mx %x% diag(N)
+  basis_t_kron <- t(basis_mx) %x% diag(N)
 
   # Calculate I_K kron demographic
-
+  demo_kron <- diag(K) %x% demo_mx
 
   ### Initialize hyperparameters
 

@@ -1,9 +1,6 @@
 
 # Check duplicates --------------------------------------------------------
 
-cranio_matrix <- readRDS(file = here::here("intermediate",
-                                           "covars_and_matrices.rds"))
-
 # Find instances where average of all observations is the same
 dup_avgs <- cranio_matrix %>%
   unnest(data) %>%

@@ -3,21 +3,8 @@
 
 ## Create boundary around cranium shape
 
-# NB: Created polygon around pixels before 2D GAMS
+# NB: Created polygon around pixels and points along boundary before this
 
-# Create boundary as points
-cranio_bound_matrix <- cranio_bound_shape %>%
-  # Add buffer so boundary is beyond data
-  st_buffer(1) %>%
-  # Convert to line
-  st_boundary() %>%
-  # Take points along this line at density = 1 unit
-  st_line_sample(density = 1) %>%
-  st_coordinates() %>%
-  as_tibble() %>%
-  rename(row = X, col = Y) %>%
-  # Add order of appearance in data
-  mutate(appearance_order = 1:n())
 
 # Visualize how boundary compares to all points
 bound_viz <- ggplot() +
@@ -43,11 +30,11 @@ bound_list <- list(
 
 # Identify row knot points
 grid_row <- seq(min(cranio_bound_matrix$row), max(cranio_bound_matrix$row),
-                length.out = GRID_N)
+                length.out = so_GRID_N)
 
 # Identify column knot points
 grid_col <- seq(min(cranio_bound_matrix$col), max(cranio_bound_matrix$col),
-                length.out = GRID_N)
+                length.out = so_GRID_N)
 
 # Expand to grid of knots
 grid_all <- expand.grid("row" = grid_row, "col" = grid_col)
@@ -72,7 +59,7 @@ grid_viz <- ggplot() +
 so_matrix_pts <- cranio_matrix %>%
   select(row, col)
 
-save(so_matrix_pts, file = here::here("intermediate", "matrix_indices.rda"))
+save(so_matrix_pts, file = here::here("analysis", "intermediate", "matrix_indices.rda"))
 
 
 # Create soap film object -------------------------------------------------
@@ -113,4 +100,4 @@ so_X_film <- so_X[, cols_film]
 S_film <- S_film0[cols_film, cols_film]
 
 save(so_X_film,
-     file = here::here("intermediate", "design_matrix_interior.rData"))
+     file = here::here("analysis", "intermediate", "design_matrix_interior.rData"))

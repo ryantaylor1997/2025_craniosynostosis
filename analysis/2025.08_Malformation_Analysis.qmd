@@ -113,7 +113,7 @@ pacman::p_load(
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
-  knitr, kableExtra, ggpubr, ggpmisc
+  knitr, kableExtra, ggpubr, ggpmisc, here
 )
 
 # Load my Rcpp functions
@@ -124,10 +124,11 @@ source(here("source", "load_matrix_data_fn.R"))
 source(here("source", "obtain_predictions_fn.R"))
 source(here("source", "lm_penalized_gibbs_fn.R"))
 source(here("source", "construct_smooth_ref_code_fns.R"))
+source(here("source", "hierarchical_penalized_gibbs_fn.R"))
 
 # Set switches
-DO_LOAD_MATRICES <- T
-DO_FILTER_MATRICES <- T
+DO_LOAD_MATRICES <- F
+DO_FILTER_MATRICES <- F
 DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
@@ -140,12 +141,9 @@ RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
 ```{r}
 #| label: load-data-prep
 
-# Set directory for references
-here::i_am("2025.08_Malformation_Analysis.qmd")
-
 # Set data folder
-DATA_FOLDER <- here::here("../../data/Lukemire, Joshua's files - data/")
-COVARS_FOLDER <- here::here("../../data/SphericalMaps_database/SphericalMaps_database/")
+DATA_FOLDER <- here("../data/Lukemire, Joshua's files - data/")
+COVARS_FOLDER <- here("../data/SphericalMaps_database/SphericalMaps_database/")
 
 # Set subfolder with image data
 MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
@@ -155,7 +153,7 @@ MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
 #| label: set-constants
 
 # Define number of knots along each dimension of soap film
-GRID_N <- 10
+so_GRID_N <- 10
 
 # Use data set to merge in fusion variables for regressions
 fusion_dict <- tibble(
@@ -317,17 +315,21 @@ Next, we load the malformation maps into one data set. Each malformation map is 
 #| label: load-matrix-files
 
 # Toggle whether to create matrix data
-if(DO_LOAD_MATRICES){
+if(DO_LOAD_MATRICES & DO_FILTER_MATRICES){
+  
   source(here("source", "03_load_Matrix_data.R"))
+  source(here("source", "04_filter_matrix_data.R"))
+  
 } else if(DO_FILTER_MATRICES){
   
-  cranio_matrix <- readRDS(file = here::here("intermediate", 
+  cranio_matrix <- readRDS(file = here::here("analysis", "intermediate", 
                                              "covars_and_matrices.rds")) 
   
   source(here("source", "04_filter_matrix_data.R"))
+  
 } else {
-  cranio_matrix_sub <- readRDS(file = here::here("intermediate",
-                                                 "covars_and_matrices_sub.rds"))
+  cranio_matrix <- readRDS(file = here::here("analysis", "intermediate", 
+                                             "covars_and_matrices_sub.rds"))
 }
 
 ```
@@ -551,6 +553,14 @@ kbl(model_fusion_params,
 Next, we introduce the soap film smoother. To fit this model, we first need to create the boundary that determines the extent of the model and the set of knots in $\mathbb{R}^2$ that will define the smoothing functions.
 
 ```{r}
+#| results: hide
+
+# Clear memory space
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
+```
+
+```{r}
 #| label: soap-film-setup
 
 source(here("source", "09_setup_soap_film.R"))
@@ -710,6 +720,8 @@ Last, we reshape our data to include one row for each patient, with a nested dat
 ```{r}
 #| label: frequentist-soap-fits
 
+source(here("source", "check_matrix_duplicates.R"))
+
 source(here("source", "11_fit_soap_film_freq.R"))
 ```
 
@@ -824,7 +836,7 @@ gc(verbose = F)
 ```{r}
 #| label: individual-soap-models
 
-source(here("source", "12_fit_soap_film_gcv_individual"))
+source(here("source", "12_fit_soap_film_gcv_individuals.R"))
 
 ```
 
@@ -955,6 +967,13 @@ E[\bgamma_{ik}] = {} & \beta_{0k} + \beta_{1k} [\text{Sex}_i] + \\
 & f_{5k} ( \text{Age}_i, \bbeta_k^{(BC)}, \lambda_{k}^{(BC)} ) * \bone [\text{Bicoronal}]\\
 \end{aligned}
 $$
+
+```{r}
+#| label: fit-coeff-demographic-model-test
+
+source(here("source", "14_fit_demographic_model_test.R"))
+```
+
 
 ## Basis Coefficient Individual Plots {#sec-basis-coeff-plots}
 

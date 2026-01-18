@@ -18,11 +18,32 @@ if(DO_PRELIM_MODEL_FUSION){
 
   saveRDS(
     fusion_models,
-    file = here::here("intermediate", "prelim_models_fusion_te.rds"))
+    file = here::here("analysis", "intermediate", "prelim_models_fusion_te.rds"))
 } else {
   fusion_models <- readRDS(
-    file = here::here("intermediate", "prelim_models_fusion_te.rds")) }
+    file = here::here("analysis", "intermediate", "prelim_models_fusion_te.rds")) }
 
+# Create boundary shape around pixels -------------------------------------
+
+# Create polygon around pixels in cranium shape
+cranio_bound_shape <- cranio_matrix %>%
+  distinct(row, col) %>%
+  st_as_sf(coords = c("row", "col")) %>%
+  concaveman(concavity = 1)
+
+# Create boundary as points
+cranio_bound_matrix <- cranio_bound_shape %>%
+  # Add buffer so boundary is beyond data
+  st_buffer(1) %>%
+  # Convert to line
+  st_boundary() %>%
+  # Take points along this line at density = 1 unit
+  st_line_sample(density = 1) %>%
+  st_coordinates() %>%
+  as_tibble() %>%
+  rename(row = X, col = Y) %>%
+  # Add order of appearance in data
+  mutate(appearance_order = 1:n())
 
 # Predict from GAM --------------------------------------------------------
 
@@ -54,16 +75,6 @@ fusion_model_summ <- fusion_models %>%
   select(fusion_type, pred_data) %>%
   unnest(pred_data)
 
-
-# Create boundary shape around pixels -------------------------------------
-
-# Create polygon around pixels in cranium shape
-cranio_bound_shape <- cranio_matrix %>%
-  distinct(row, col) %>%
-  st_as_sf(coords = c("row", "col")) %>%
-  concaveman(concavity = 1)
-
-
 # Plot GAM predictions ----------------------------------------------------
 
 # Plot these predictions (in a rectangle shape with brain mask)
@@ -80,7 +91,7 @@ plot_model_fusion <- ggplot() +
   labs(fill = "Pred. Growth\n(1 y.o. F)") +
   theme(legend.position = "bottom")
 
-ggsave(here::here("../results", "tensor_smooth_fusion.png"),
+ggsave(here::here("results", "tensor_smooth_fusion.png"),
        plot_model_fusion,
        height = 4, width = 8, units = "in")
 

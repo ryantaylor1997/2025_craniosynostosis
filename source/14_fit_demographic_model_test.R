@@ -2,7 +2,7 @@
 # Load GCV-based coefficients ---------------------------------------------
 
 ## Load all coefficients previously fit, along with demographics
-gcv_coeffs <- read_csv(here::here("intermediate", "individual_soap_coeffs.csv"))
+gcv_coeffs <- read_csv(here::here("analysis", "intermediate", "individual_soap_coeffs.csv"))
 
 cranio_coeff_df <- gcv_coeffs %>%
   mutate(fusion_type = fct_infreq(fusion_type),
@@ -60,7 +60,7 @@ coeff_S_combo <- list(coeff_ingredients$S[[1]],
 
 # Save intermediate steps to share
 save(coeff_ingredients,
-     file = here::here("intermediate", "demographics_model_matrices.rda"))
+     file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
 
 
 # Run Gibbs sampler for coefficient models --------------------------------
@@ -233,4 +233,5 @@ coeff_bayes1_plot <- ggplot(coeff_newdata %>% filter(sex == 0),
 
 # Add y limit so that patterns are more visible
 coeff_bayes1_plot_lim <- coeff_bayes1_plot +
-  coord_cartesian(ylim = max(coeff_y)*c(-0.5, 1.25))
+  coord_cartesian(ylim = max(coeff_y)*c(-0.5, 1.25)) +
+labs(title = "Bayesian Hierarchical Coefficient Functions (Zoomed In)")

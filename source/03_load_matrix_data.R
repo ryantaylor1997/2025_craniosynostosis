@@ -29,5 +29,5 @@ cranio_matrix %<>%
          col = -col)
 
 saveRDS(cranio_matrix,
-        file = here::here("intermediate",
+        file = here::here("analysis", "intermediate",
                           "covars_and_matrices.rds"))

@@ -44,11 +44,11 @@ if(DO_INDIV_SOAPS){
     )
 
   saveRDS(cranio_models,
-          file = here::here("intermediate", "individual_soap_film_df.rds"))
+          file = here::here("analysis", "intermediate", "individual_soap_film_df.rds"))
 
 } else {
   cranio_models <- readRDS(
-    file = here::here("intermediate", "individual_soap_film_df.rds"))
+    file = here::here("analysis", "intermediate", "individual_soap_film_df.rds"))
 }
 
 
@@ -72,8 +72,8 @@ cranio_models_beta <- cranio_models %>%
 
 # Save coefficients as csv
 write_csv(cranio_models_beta,
-          here::here("intermediate", "individual_soap_coeffs.csv"))
+          here::here("analysis", "intermediate", "individual_soap_coeffs.csv"))
 
 # Save estimator requirements as RData
 save(cranio_models_beta, so_X,
-     file = here::here("intermediate", "individual_soap_film_fits.rda"))
+     file = here::here("analysis", "intermediate", "individual_soap_film_fits.rda"))

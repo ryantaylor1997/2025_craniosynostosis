@@ -65,9 +65,9 @@ if(DO_PRELIM_MODEL_PIXEL){
     unnest(smooth_pred)
 
   save(model_pixel_summ, model_pixel_smooth,
-       file = here::here("intermediate",
+       file = here::here("analysis", "intermediate",
                          "prelim_model_pixels_summ.rda"))
-} else{ load(file = here::here("intermediate",
+} else{ load(file = here::here("analysis", "intermediate",
                                "prelim_model_pixels_summ.rda")) }
 
 # Plot pixel-level model results ------------------------------------------

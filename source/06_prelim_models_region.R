@@ -12,7 +12,7 @@ matrix_region <- cranio_matrix %>%
   mutate(geometry = st_convex_hull(geometry)) %>%
   mutate(centroid = st_centroid(geometry))
 
-save(matrix_region, file = here::here("intermediate", "region_shape_object.rda"))
+save(matrix_region, file = here::here("analysis", "intermediate", "region_shape_object.rda"))
 
 
 # Run (time-intensive) region-level models --------------------------------
@@ -50,12 +50,12 @@ if(DO_PRELIM_MODEL_REGION){
 
   saveRDS(
     region_models,
-    file = here::here("intermediate",
+    file = here::here("analysis", "intermediate",
                       "prelim_models_region.rds"))
 
 } else {
   region_models <- readRDS(
-    file = here::here("intermediate",
+    file = here::here("analysis", "intermediate",
                       "prelim_models_region.rds")) }
 
 

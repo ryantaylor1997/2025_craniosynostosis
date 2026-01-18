@@ -39,7 +39,7 @@ cranio_models <- cranio_matrix %>%
   nest() %>%
   ungroup()
 
-save(cranio_models, file = here::here("intermediate", "growth_maps.rda"))
+save(cranio_models, file = here::here("analysis", "intermediate", "growth_maps.rda"))
 
 
 # Create subset for testing -----------------------------------------------
@@ -382,7 +382,7 @@ plot_map_soap <- ggplot(so_test_fit) +
   scale_fill_viridis_c(option = "turbo", limits = so_diff_range) +
   labs(x = NULL, y = NULL,
        fill = "Pred. Growth",
-       title = "Sample Predictions") +
+       title = "Sample Predictions using Nested Data") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +

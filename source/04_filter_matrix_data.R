@@ -7,5 +7,5 @@ cranio_matrix_sub <- cranio_matrix %>%
   ungroup()
 
 saveRDS(cranio_matrix_sub,
-        file = here::here("intermediate",
+        file = here::here("analysis", "intermediate",
                           "covars_and_matrices_sub.rds"))
