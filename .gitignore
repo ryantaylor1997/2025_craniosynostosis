@@ -15,3 +15,4 @@ output/unnamed*
 analysis/intermediate/covars_and_matrices.RData
 /analysis/intermediate
 /drafts
+analysis/*html

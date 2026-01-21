@@ -90,6 +90,8 @@ lm_penalized_gibbs <- function(
 
   ### Run MCMC loop
 
+  cat("MCMC Status:", "\n")
+
   for(iter in 1:iters){
 
     # Output on checkpoints
@@ -135,7 +137,7 @@ lm_penalized_gibbs <- function(
     time_check <- Sys.time()
 
     # Generate new beta sample
-    beta <- t(rmvnorm(n = 1, beta_expect, beta_var))
+    beta <- t(rmvnorm(n = 1, beta_expect, beta_var, method = "chol"))
 
     timer["beta_draw"] <- timer["beta_draw"] +
       difftime(Sys.time(), time_check, units = "secs")

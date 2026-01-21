@@ -1395,9 +1395,9 @@ These priors yield closed-form full conditional distributions, written below.
 
 $$
 \begin{alignat*}{4}
-& (1) & [vec(\bgamma) | \cdot] & \sim {} && \mathcal{N}_{N*K} ( && [(\bB^\top \bB + \bP_T^{(\gamma)})^{-1} \otimes \bI_N] [(\bB^\top \otimes \bI_N) vec(\bG) + (\bP_T^{(\gamma)} \otimes \bW) vec(\bbeta)], \\
+& (1) & {} [vec(\bgamma) | \cdot] & \sim {} && \mathcal{N}_{N*K} ( && [(\bB^\top \bB + \bP_T^{(\gamma)})^{-1} \otimes \bI_N] [(\bB^\top \otimes \bI_N) vec(\bG) + (\bP_T^{(\gamma)} \otimes \bW) vec(\bbeta)], \\
 & & & && && \sigma^2 [ \underbrace{(\bB^\top \bB + \bP_T^{(\gamma)})^{-1}}_{K \times K} \otimes \bI_N ] \\ \\
-& (2) & [vec(\bbeta) | \cdot ] & \sim {} && \mathcal{N}_{Q*K} ( &&  [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1} [(\bP_T^{(\gamma)} \otimes \bW^\top) vec(\bgamma)], \\
+& (2) & {} [vec(\bbeta) | \cdot ] & \sim {} && \mathcal{N}_{Q*K} ( &&  [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1} [(\bP_T^{(\gamma)} \otimes \bW^\top) vec(\bgamma)], \\
 & & & && && \sigma^2 [(\bP_T^{(\gamma)} \otimes \bW^\top \bW) + \frac{\sigma^2}{\tau^2} (\bI_K \otimes \bP_T^{(\beta)})]^{-1}) \\ \\
 & (3) & [\sigma^2 | \cdot ] & \sim {} && \Gamma^{-1} ( && a_\sigma + \frac{N*M}{2} + \frac{N*K}{2}, \\
 & & & && && b_\sigma + \frac{1}{2} [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)]^\top [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)] + \\
