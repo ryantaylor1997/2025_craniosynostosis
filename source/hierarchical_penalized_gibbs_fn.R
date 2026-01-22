@@ -40,7 +40,7 @@ hierarchical_penalized_gibbs <- function(
   if(is.matrix(pen_basis)){
     pen_basis <- list(pen_basis) }
 
-  if(is.matrix(pen_list_demo)){
+  if(is.matrix(pen_demo)){
     pen_demo <- list(pen_demo) }
 
   ### Calculate dimensions
@@ -303,30 +303,85 @@ hierarchical_penalized_gibbs <- function(
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
 
-    ### (5) Update lambdas for soap film (smoothness factors)
+    ### (5) Update lambdas for soap film (spatial smoothness factors)
 
-    # ** UPDATE gamma_mx_list AND 2 beta_mx_list OBJECTS **
-    beta_mx_
-
-    beta_f_mx
+    # Update lists of parameter matrices separated into soap film-based blocks
+    gamma_mx_list <- map(pen_block_cols_basis, ~gamma_mx[, .x])
+    beta_mx_basis_list <- map(pen_block_cols_basis, ~beta_mx[, .x])
 
     # Calculate posterior gamma shape
     b_gamma_post <- pmap(
-      gamma_mx_list,
-      pen_basis_dims_basis,
-      beta_mx_basis_list,
-      pen_block_list_basis,
-      function(){
-        (1 / (2 * sigmasq)) * crossprod(beta, S_j) %*% beta + d_pri
+      list(
+        b_gamma_pri,
+        gamma_mx_list,
+        pen_block_dims_basis,
+        beta_mx_basis_list,
+        pen_block_list_basis
+      ),
+      function(b_pri, gamma_block, pen_block_dim, beta_block, pen_block){
+
+        # Vectorize gamma and beta block matrices
+        dim(gamma_block) <- c(prod(dim(gamma_block)), 1)
+        dim(beta_block) <- c(prod(dim(beta_block)), 1)
+
+        # Isolate demographic Kronecker produc the size of the block
+        demo_kron_block <- demo_kron[1:N*pen_block_dim, 1:Q*pen_block_dim]
+
+        # Subtract chunk of demographic effects from chunk of gammas
+        block_vec <- gamma_block - demo_kron_block %*% beta_block
+
+        b_post <- b_pri +
+        (1 / (2 * sigmasq)) *
+          crossprod(block_vec, pen_block %x% diag(N)) %*% block_vec
+
+        return(b_post)
       })
 
-    # Update lambdas
-    lambda <- map2_dbl(c_post, d_post,
-                       function(c_new, d_new){
-                         rgamma(1, c_new, d_new)
-                       })
+    # Draw new basis lambdas
+    lambda_basis <- map2_dbl(
+      a_gamma_post, b_gamma_post,
+      function(a_new, b_new){
+        rgamma(1, a_new, b_new)
+      })
 
-    timer["lambdas_update"] <- timer["lambdas_update"] +
+    timer["lambdas_basis_update"] <- timer["lambdas_basis_update"] +
+      difftime(Sys.time(), time_check, units = "mins")
+    time_check <- Sys.time()
+
+    ### (6) Update lambda(s) for demographic effects (demographic smoothness factors)
+
+    # Update list of demographic effects in penalized and unpenalized blocks
+    beta_mx_demo_list <- map(pen_block_cols_demo, ~beta_mx[.x, ])
+
+    # Calculate posterior gamma shape
+    b_alpha_post <- pmap(
+      list(
+        b_alpha_pri,
+        beta_mx_demo_list,
+        pen_block_dims_demo,
+        pen_block_list_demo
+      ),
+      function(b_pri, beta_block, pen_block_dim, pen_block){
+
+        # Vectorize beta block tranpose matrices
+        beta_block_t <- t(beta_block)
+        dim(beta_block_t) <- c(prod(dim(beta_block_t)), 1)
+
+        b_post <- b_pri +
+          (1 / (2 * tausq)) *
+          crossprod(beta_block_t, pen_block %x% diag(K)) %*% beta_block_t
+
+        return(b_post)
+      })
+
+    # Draw new basis lambdas
+    lambda_demo <- map2_dbl(
+      a_alpha_post, b_alpha_post,
+      function(a_new, b_new){
+        rgamma(1, a_new, b_new)
+      })
+
+    timer["lambdas_demo_update"] <- timer["lambdas_demo_update"] +
       difftime(Sys.time(), time_check, units = "mins")
     time_check <- Sys.time()
 

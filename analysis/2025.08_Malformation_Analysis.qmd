@@ -1413,10 +1413,10 @@ $$
 \end{alignat*}
 $$
 
-## Combined Model Gibbs {#sec-joint-model-gibbs}
+## Combined Model Simulation {#sec-joint-model-sim}
 
 ```{r}
-#| label: bayesian-hierarchical-gibbs
+#| label: bayesian-hierarchical-gibbs-sim
 
 
 ```
