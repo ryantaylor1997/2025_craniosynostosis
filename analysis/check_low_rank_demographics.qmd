@@ -1,0 +1,212 @@
+---
+title: "Investigating Low-Rank Demographic Design Matrix"
+format: 
+  html:
+    toc: true
+    toc-depth: 2
+    toc-title: Contents
+    toc-location: left
+    df-print: kable
+    theme: sandstone
+    highlight: haddock
+    code-fold: true
+    code-overflow: wrap
+    knitr:
+      opts_chunk:
+        echo: true,
+        include: true
+        message: false,
+        warning: false
+        results: markup
+        fig.align: center
+        fig.height: 5
+        fig.width: 7
+        R.options:
+          scipen: 999
+          knitr.kable.NA: ""
+editor: source
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+rm(list = ls()); gc()
+
+# Load packages
+# if(!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  
+  # Bayes
+  coda, numDeriv, mvtnorm, extraDistr, rstan, 
+  
+  # FDA
+  
+  # Specialty
+  sf, refund, itsadug,
+  
+  # Format
+  latex2exp, table1, gtsummary, ggridges, forestplot,
+  broom.helpers, broom.mixed, patchwork, colorRamps, modelsummary,
+  
+  # Modeling
+  glmnet, mgcv, geepack, lme4, lmerTest,
+  
+  # Useful extensions
+  pwr, gtools, pROC, corrplot, readxl, MASS, car,
+  
+  # Basics
+  DescTools, tidyverse, magrittr, janitor, glue, skimr,
+  knitr, kableExtra, ggpubr, ggpmisc,
+)
+```
+
+# Data Subset Investigation
+
+## Create4 data subset
+
+```{r}
+#| label: subset-data
+
+cranio_sub <- readRDS(here::here("analysis", "intermediate",
+                                 "demographics_filtered.rds"))
+
+cranio_dup_fnames <- readRDS(here::here("analysis", "intermediate",
+                                        "duplicate_fnames.rds"))
+
+# Identify patients of each fusion type
+set.seed(978)
+
+cranio_demo_test_df <- cranio_sub %>%
+  filter(!fname %in% cranio_dup_fnames & age <= 365) %>%
+  group_by(fusion_type) %>%
+  slice_sample(n = 10)
+```
+
+## Create design matrix from subset
+
+```{r}
+#| label: setup-subset-model-ingredients
+
+# Convert demographic data to model matrix
+
+cranio_knots_age <- 10
+
+cranio_demo_smooth_test <- smooth.construct2(
+  s(age, bs = "cr", k = cranio_knots_age),
+  data = cranio_demo_test_df, knots = NULL
+)
+
+# Attach name of the dataset to this smooth
+attr(cranio_demo_smooth_test, "data") <- "cranio_demo_test_df"
+
+# Use function to reference-code smooth by fusion type
+demo_ingredients_test <- setup_reference_model(
+  sm = cranio_demo_smooth_test,
+  by_var = "fusion_type", param_formula = ~sex
+)
+
+# Combine suture fusion penalties so we estimate the same lambda
+demo_penalty_list_test <- list(demo_ingredients_test$S[[1]],
+                               Reduce("+", demo_ingredients_test$S[-1]))
+
+
+```
+
+## Analyze subset design matrix
+
+```{r}
+#| label: subset-design-analysis
+
+plot_basis_subset <- demo_ingredients_test$X[, 3:11] %>% 
+  as.data.frame() %>% 
+  rownames_to_column("row") %>% 
+  bind_cols(age = cranio_demo_test_df$age) %>%  
+  pivot_longer(-c(row, age)) %>% 
+  mutate(name = as.numeric(str_remove(name, "V"))) %>%  
+  ggplot(aes(x = age, y = value, color = as.factor(name))) + 
+  geom_line()
+```
+
+
+
+# Full Data and Working Model
+
+```{r}
+#| label: full-data
+
+### Full data of frequentist coefficients
+
+# Load intermediate file of design matrix and penalty fed into Bayesian model
+
+## Load all coefficients previously fit, along with demographics
+gcv_coeffs <- read_csv(here::here("analysis", "intermediate", "individual_soap_coeffs.csv"))
+
+cranio_coeff_df <- gcv_coeffs %>%
+  mutate(fusion_type = fct_infreq(fusion_type),
+         sex = factor(sex, levels = c(0,1)))
+
+```
+
+```{r}
+#| label: recreate-full-demo-matrix
+
+### Recreate full demographic design matrix
+
+# Construct smooth without constraint or factor levels
+cranio_coeff_smooth <- smooth.construct2(
+  s(age, bs = "cr", k = cranio_knots_age),
+  data = cranio_coeff_df, knots = NULL
+)
+
+# Attach name of the dataset to this smooth
+attr(cranio_coeff_smooth, "data") <- "cranio_coeff_df"
+
+## Create design and penalty matrices using functions we wrote
+coeff_ingredients <- setup_reference_model(
+  sm = cranio_coeff_smooth,
+  by_var = "fusion_type", param_formula = ~sex
+)
+
+# Combine suture fusion penalties so we estimate the same lambda
+coeff_S_combo <- list(coeff_ingredients$S[[1]],
+                      Reduce("+", coeff_ingredients$S[-1]))
+```
+
+```{r}
+#| label: full-demo-model-setup
+
+coeff_y <- cranio_coeff_df$beta_38
+
+# Set default parameters
+def_pars_coeff <- c(
+  "beta" = 0.0,
+  "sigma_sq" = var(coeff_y),
+  "lambda" = 0.1,
+  "a" = 1.0,
+  "b" = 1.0,
+  "c" = 1.0,
+  "d" = 1.0
+)
+
+# Set iterations
+bayes_coeff_iters <- 5e3
+
+set.seed(700)
+
+# Run function
+coeff_bayes1 <- lm_penalized_gibbs(
+  y = coeff_y, X = coeff_ingredients$X,
+  S = coeff_S_combo, has_unpenalized = TRUE,
+  beta0 = def_pars_coeff["beta"],
+  sigmasq0 = def_pars_coeff["sigma_sq"],
+  lambda0 = def_pars_coeff["lambda"],
+  a_pri = def_pars_coeff["a"],
+  b_pri = def_pars_coeff["b"],
+  c_pri = def_pars_coeff["c"],
+  d_pri = def_pars_coeff["d"],
+  iters = bayes_coeff_iters,
+  burn_pct = 0.1
+)
+```
+

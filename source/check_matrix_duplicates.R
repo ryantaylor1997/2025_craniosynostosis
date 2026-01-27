@@ -16,6 +16,9 @@ dup_avgs <- cranio_matrix %>%
 
 cranio_dup_fnames <- unique(dup_avgs$fname)
 
+saveRDS(cranio_dup_fnames, here::here("analysis", "intermediate",
+                                      "duplicate_fnames.rds"))
+
 # Reshape these to 1 per set of duplicates
 dups_collected <- dup_avgs %>%
   group_by(diff_avg, n) %>%

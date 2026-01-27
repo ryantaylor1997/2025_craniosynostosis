@@ -30,6 +30,8 @@ editor: source
 
 ::: {.hidden}
 $$
+\usepackage{xcolor}
+
 \newcommand{\bX}{\mathbf X}
 \newcommand{\bY}{\mathbf Y}
 \newcommand{\by}{\mathbf y}
@@ -109,7 +111,7 @@ pacman::p_load(
   mgcv,
   
   # Useful extensions
-  gtools, readxl, data.table, reshape2, ggridges, Matrix,
+  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
@@ -125,6 +127,8 @@ source(here("source", "obtain_predictions_fn.R"))
 source(here("source", "lm_penalized_gibbs_fn.R"))
 source(here("source", "construct_smooth_ref_code_fns.R"))
 source(here("source", "hierarchical_penalized_gibbs_fn.R"))
+source(here("source", "simulate_data_fn.R"))
+source(here("source", "mv_normal_matrix_fn.R"))
 
 # Set switches
 DO_LOAD_MATRICES <- F
@@ -155,6 +159,9 @@ MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
 # Define number of knots along each dimension of soap film
 so_GRID_N <- 10
 
+# Define number of knots along age effecet
+cranio_knots_age <- 10
+
 # Use data set to merge in fusion variables for regressions
 fusion_dict <- tibble(
   fusion_type = c("Normative", 
@@ -174,11 +181,10 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Reorganized code into separate R scripts
+-   Wrote function to simulate data based on our model
+-   Updated Gibbs function to use `Matrix` package and avoid memory issues with Kronecker products
 
--   Edited description of data to add more clarity about how each pixel $s_m$ is indexed to a location $(x_m, y_m)$ (@sec-joint-model-data)
--   Edited description of model to remove the previous description of a mixed model (@sec-joint-model-mean)
--   Edited description of assumptions for $\bgamma$ to add more clarity on the demographic effects contributing to the expectation of $\bgamma$ (@sec-joint-model-coefficients)
+
 
 ## Questions
 
@@ -332,6 +338,8 @@ if(DO_LOAD_MATRICES & DO_FILTER_MATRICES){
                                              "covars_and_matrices_sub.rds"))
 }
 
+# Identify duplicate data
+source(here("source", "check_matrix_duplicates.R"))
 ```
 
 ### Data Subset {#sec-subset-data}
@@ -1336,26 +1344,31 @@ $$
 \end{aligned}
 $$
 
-## Data-Generating Assumptions
-
-The assumptions above are equivalent to the data-generating model:
-
-$$
-\begin{aligned}
-\underbrace{vec(\bG)}_{N*M \times 1} &= [\bB \otimes \bI_N] vec(\bgamma) + \bepsilon_G \\
-\bepsilon_G & \sim \mathcal{N} ( \bzero, \sigma^2 \bI_{N*M}) \\
-\underbrace{vec(\bgamma)}_{N*K \times 1} &= [\bI_K \otimes \bW] vec(\bbeta) + \bepsilon_\gamma \\
-\bepsilon_\gamma & \sim \mathcal{N} ( \bzero, \sigma^2 [\bP_T^{(\gamma) -} \otimes \bI_N]) \\
-\bP_T^{(\gamma)} &= \begin{bmatrix}
-\lambda_c \bP_c & \bzero \\
-\bzero & \lambda_f \bP_f
-\end{bmatrix}
-\end{aligned}
-$$
-
 ## Distributional Assumptions {#sec-joint-model-distributions}
 
 We can now express all of our distributional assumptions. 
+
+### Data-Generating Mechanism
+
+We write the data-generating mechanism below. Scalar parameters that are directly set are highlighted in $\color{red}{\text{red}}$ the first time they appear; other parameters that we will recover but are drawn from a distribution are highlighted in $\color{blue}{\text{blue}}$; and given matrices are highlighted in $\color{green}{\text{green}}$:
+
+$$
+\begin{aligned}
+\underbrace{vec(\bG)}_{N*M \times 1} &= [ {\color{green} \bB } \otimes \bI_N] vec({\color{blue}  \bgamma }) + \bepsilon_G \\
+\bepsilon_G & \sim \mathcal{N} ( \bzero, {\color{red} \sigma^2 } \bI_{N*M}) \\
+\underbrace{vec(\bgamma)}_{N*K \times 1} &= [\bI_K \otimes {\color{green} \bW}] vec({\color{blue} \bbeta }) + \bepsilon_\gamma \\
+\bepsilon_\gamma & \sim \mathcal{N} ( \bzero, \sigma^2 [\bP_T^{(\gamma) -} \otimes \bI_N]) \\
+\bP_T^{(\gamma)} &= \begin{bmatrix}
+\color{red}{ \lambda_c } {\color{green} \bP_c} & \bzero \\
+\bzero & {\color{red} \lambda_f } {\color{green} \bP_f}
+\end{bmatrix} \\
+\underbrace{vec(\bbeta)}_{Q*K \times 1} & \sim \mathcal{N} (\bzero, {\color{red} \tau^2 } [\bI_K \otimes \bP_T^{(\beta) -}]) \\
+\bP_T^{(\beta)} &= \begin{bmatrix}
+\bI_{Q_U} & \bzero \\
+\bzero & {\color{red} \lambda_\alpha } [\bI_R \otimes {\color{green} \bP_\alpha}]
+\end{bmatrix}
+\end{aligned}
+$$
 
 ### Prior Distributions {#sec-joint-model-priors}
 
@@ -1414,6 +1427,14 @@ $$
 $$
 
 ## Combined Model Simulation {#sec-joint-model-sim}
+
+```{r}
+#| results: hide
+
+# Clear memory space
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
+```
 
 ```{r}
 #| label: bayesian-hierarchical-gibbs-sim

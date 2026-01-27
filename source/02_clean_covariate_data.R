@@ -176,6 +176,10 @@ cranio_sub <- cranio %>%
   mutate(sex = factor(sex),
          fusion_type = fct_drop(fusion_type))
 
+saveRDS(cranio_sub,
+        file = here::here("analysis", "intermediate",
+                          "demographics_filtered.rds"))
+
 # Summarize Fusion Types --------------------------------------------------
 
 # Summarize counts of images and patients by fusion type

@@ -79,7 +79,7 @@ make_reference_coded_splines <- function(sm, drop_col = NULL, newdata = NULL,
   if(is.null(newdata)){
     # Define indicator matrix list
     # Each matrix is 0 except for a 1 on the diagonal
-    # This 1 represents the block where the penalty matrix S is
+    # This 1 represents the block where the penalty matrix S is populated
     spline_indicator_list <- map(1:length(levels(by_vec)),
                                  .f = function(j, z = rep(0, length(levels(by_vec)))){
                                    z[j] <- 1

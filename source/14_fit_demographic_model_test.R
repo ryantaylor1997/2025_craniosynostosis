@@ -36,12 +36,9 @@ coeff_plots <- ggplot(coeff_toplot %>%
 
 ### Create cubic regression basis splines for age
 
-# Set rank
-knots_per_fusion <- 10
-
 # Construct smooth without constraint or factor levels
 cranio_coeff_smooth <- smooth.construct2(
-  s(age, bs = "cr", k = knots_per_fusion),
+  s(age, bs = "cr", k = cranio_knots_age),
   data = cranio_coeff_df, knots = NULL
 )
 

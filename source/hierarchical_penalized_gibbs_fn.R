@@ -16,7 +16,7 @@ hierarchical_penalized_gibbs <- function(
     pen_demo, # P_beta
     basis_has_unpenalized = FALSE, # Controls 1st lambda in basis penalty list
     demo_has_unpenalized = FALSE, # Controls 1st lambda in demo penalty list
-    gamma0, beta0, sigmasq0, lambda_basis0, tausq0, lambda_demo0, # Default parameters
+    gamma0, beta0, sigmasq0, tausq0, lambda_basis0, lambda_demo0, # Default parameters
     a_sigma_pri, b_sigma_pri, a_gamma_pri, b_gamma_pri,
     a_tau_pri, b_tau_pri, a_alpha_pri, b_alpha_pri, # Default hyperparameters
     iters = 1e4, burn_pct = 0.1 # MCMC parameters
@@ -36,12 +36,19 @@ hierarchical_penalized_gibbs <- function(
              "lambdas_basis_update" = 0,
              "lambdas_demo_update" = 0)
 
-  ### Reformat penalty matrices
+  ### Reformat inputs
+
+  ## Reformat penalty matrices as lists
   if(is.matrix(pen_basis)){
     pen_basis <- list(pen_basis) }
 
   if(is.matrix(pen_demo)){
     pen_demo <- list(pen_demo) }
+
+  ## Reformat data matrices
+  outcome_mx <- Matrix(outcome_mx)
+  basis_mx <- Matrix(basis_mx)
+  demo_mx <- Matrix(demo_mx)
 
   ### Calculate dimensions
 
@@ -49,9 +56,9 @@ hierarchical_penalized_gibbs <- function(
   N <- nrow(outcome_mx)
   M <- ncol(outcome_mx)
   K <- ncol(basis_mx)
-  Q <- ncol(demographic_mx)
+  Q <- ncol(demo_mx)
 
-  stopifnot(nrow(basis_mx) == M, nrow(demographic_mx) == N)
+  stopifnot(nrow(basis_mx) == M, nrow(demo_mx) == N)
 
   ### Determine what we need from penalty matrices
 
@@ -106,11 +113,11 @@ hierarchical_penalized_gibbs <- function(
 
   # Initialize gamma and beta moments before update
   gamma_expect <- gamma
-  gamma_var <- diag(N*K)
-  basis_sq_plus_pen <- diag(N*K)
+  gamma_var <- Diagonal(N*K)
+  basis_sq_plus_pen <- Diagonal(N*K)
 
   beta_expect <- beta
-  beta_var <- diag(Q*K)
+  beta_var <- Diagonal(Q*K)
 
   # Compute hyperparameters that don't update (gamma / Igamma shapes)
   a_sigma_post <- a_sigma_pri + N*M/2 + N*K/2
@@ -121,8 +128,8 @@ hierarchical_penalized_gibbs <- function(
   ### Data manipulations
 
   # Allocate storage for versions of gamma and beta in matrix form
-  gamma_mx <- matrix(gamma, N, K)
-  beta_mx <- matrix(beta, Q, K)
+  gamma_mx <- Matrix(gamma, N, K)
+  beta_mx <- Matrix(beta, Q, K)
 
   # Allocate storage for subsets of these coefficients in lambda updates
   gamma_mx_list <- map(pen_block_cols_basis, ~gamma_mx[, .x])
@@ -130,8 +137,7 @@ hierarchical_penalized_gibbs <- function(
   beta_mx_demo_list <- map(pen_block_cols_demo, ~beta_mx[.x, ])
 
   # Convert outcome matrix to vector
-  outcome_vec <- outcome_mx
-  dim(outcome_vec) <- c(prod(dim(outcome_vec)), 1)
+  outcome_vec <- as(outcome_mx, "sparseVector")
 
   # Calculate sum of outcome squared (G transpose * G)
   outcome_vec_sq <- sum(outcome_vec^2)
@@ -143,11 +149,11 @@ hierarchical_penalized_gibbs <- function(
   demo_sq <- crossprod(demo_mx)
 
   # Calculate basis kron I_N and basis transpose kron I_N
-  basis_kron <- basis_mx %x% diag(N)
-  basis_t_kron <- t(basis_mx) %x% diag(N)
+  basis_kron <- kronecker(basis_mx, Diagonal(N))
+  basis_t_kron <- kronecker(t(basis_mx), Diagonal(N))
 
   # Calculate I_K kron demographic
-  demo_kron <- diag(K) %x% demo_mx
+  demo_kron <- kronecker(Diagonal(K), demo_mx)
 
   ### Create objects to save output
 
@@ -215,9 +221,9 @@ hierarchical_penalized_gibbs <- function(
 
     basis_sq_plus_pen_inv <- solve(basis_sq_plus_pen)
 
-    basis_sq_plus_pen_inv_kron <- basis_sq_plus_pen_inv %x% diag(N)
+    basis_sq_plus_pen_inv_kron <- kronecker(basis_sq_plus_pen_inv, Diagonal(N))
 
-    pen_basis_kron_demo <- pen_basis_total %x% demo_mx
+    pen_basis_kron_demo <- kronecker(pen_basis_total, demo_mx)
 
     ## Compute expectation and variance
     gamma_expect <- basis_sq_plus_pen_inv_kron %*%
@@ -230,9 +236,11 @@ hierarchical_penalized_gibbs <- function(
     time_check <- Sys.time()
 
     ## Gamma draw
-    gamma <- t(rmvnorm(n = 1, gamma_expect, gamma_var, method = "chol"))
 
-    gamma_mx <- matrix(gamma, N, K, byrow = F)
+    # Use custom function to perform Cholesky decomposition on sparse Matrix
+    gamma <- t(rmvnorm_Matrix(n = 1, gamma_expect, gamma_var))
+
+    gamma_mx <- Matrix(as(gamma, "sparseVector"), N, K, byrow = F)
 
     timer["gamma_draw"] <- timer["gamma_draw"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -241,14 +249,16 @@ hierarchical_penalized_gibbs <- function(
     ### (2) Update beta (demographic coefficients)
 
     ## Compute matrices based on penalty matrices that we use in multiple places
-    pen_basis_kron_demo_sq <- pen_basis_total %x% demo_sq
+    pen_basis_kron_demo_sq <- kronecker(pen_basis_total, demo_sq)
 
     penalties_kron <- pen_basis_kron_demo_sq +
-      (sigmasq / tausq) * (diag(K) %x% pen_demo_total)
+      (sigmasq / tausq) * kronecker(Diagonal(K), pen_demo_total)
 
-    penalties_kron_inv <- solve(penalties_kron)
+    pen_basis_kron_demo_t <- kronecker(pen_basis_total, t(demo_mx))
 
-    pen_basis_kron_demo_t <- pen_basis_total %x% t(demo_mx)
+    # Take inverse that comprises most of the variance
+    # -> tol = 0 avoids testing for whether it is near-singular
+    penalties_kron_inv <- solve(penalties_kron, tol = 0)
 
     ## Compute expectation and variance
     beta_expect <- penalties_kron_inv %*%
@@ -261,7 +271,7 @@ hierarchical_penalized_gibbs <- function(
     time_check <- Sys.time()
 
     ## Generate new beta sample
-    beta <- t(rmvnorm(n = 1, beta_expect, beta_var, method = "chol"))
+    beta <- t(rmvnorm_Matrix(n = 1, beta_expect, beta_var))
 
     beta_mx <- matrix(beta, Q, K, byrow = F)
 
@@ -275,7 +285,7 @@ hierarchical_penalized_gibbs <- function(
     b_sigma_post <-
       b_sigma_pri + 0.5 * (
         outcome_vec_sq +
-          crossprod(gamma, (basis_sq_plus_pen %x% diag(N))) %*% gamma +
+          crossprod(gamma, kronecker(basis_sq_plus_pen, Diagonal(N)) ) %*% gamma +
           crossprod(beta, pen_basis_kron_demo_sq) %*% beta
       ) -
       crossprod(gamma, basis_t_kron) %*% outcome_vec -
@@ -293,7 +303,7 @@ hierarchical_penalized_gibbs <- function(
 
     # Second parameter of inverse gamma
     b_tau_post <- b_tau_pri +
-      0.5 * crossprod(beta, (diag(K) %x% pen_demo_total)) %*% beta
+      0.5 * crossprod(beta, kronecker(Diagonal(K), pen_demo_total) ) %*% beta
 
     # Draw new tau squared sample
     precision_param <- rgamma(1, a_tau_post, b_tau_post)
@@ -324,7 +334,7 @@ hierarchical_penalized_gibbs <- function(
         dim(gamma_block) <- c(prod(dim(gamma_block)), 1)
         dim(beta_block) <- c(prod(dim(beta_block)), 1)
 
-        # Isolate demographic Kronecker produc the size of the block
+        # Isolate demographic Kronecker product the size of the block
         demo_kron_block <- demo_kron[1:N*pen_block_dim, 1:Q*pen_block_dim]
 
         # Subtract chunk of demographic effects from chunk of gammas
@@ -332,7 +342,7 @@ hierarchical_penalized_gibbs <- function(
 
         b_post <- b_pri +
         (1 / (2 * sigmasq)) *
-          crossprod(block_vec, pen_block %x% diag(N)) %*% block_vec
+          crossprod(block_vec, kronecker(pen_block, Diagonal(N)) ) %*% block_vec
 
         return(b_post)
       })
@@ -369,7 +379,7 @@ hierarchical_penalized_gibbs <- function(
 
         b_post <- b_pri +
           (1 / (2 * tausq)) *
-          crossprod(beta_block_t, pen_block %x% diag(K)) %*% beta_block_t
+          crossprod(beta_block_t, kronecker(pen_block, Diagonal(K)) ) %*% beta_block_t
 
         return(b_post)
       })
