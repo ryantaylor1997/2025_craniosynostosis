@@ -10,7 +10,7 @@
 set.seed(978)
 
 cranio_demo_test_df <- cranio_sub %>%
-  filter(!fname %in% cranio_dup_fnames & age <= 365) %>%
+  filter(!fname %in% cranio_dup_fnames) %>%
   group_by(fusion_type) %>%
   slice_sample(n = 10)
 

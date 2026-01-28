@@ -60,6 +60,7 @@ $$
 \newcommand{\bbeta}{\boldsymbol{\beta}}
 \newcommand{\bgamma}{\boldsymbol{\gamma}}
 \newcommand{\bepsilon}{\boldsymbol{\epsilon}}
+\newcommand{\bphi}{\boldsymbol{\phi}}
 \newcommand{\hatbbeta}{\hat{\bbeta}}
 \newcommand{\hatbgamma}{\hat{\bgamma}}
 \newcommand{\bSigma}{\boldsymbol{\Sigma}}
@@ -444,24 +445,24 @@ source(here("source", "06_prelim_models_region.R"))
 ```
 
 
-We denote the average growth for patient $i$ in region $d$ as $G_{id}$. We let $f_d(\cdot)$ be a cubic regression spline estimated on observations from region $d$; we choose a cubic regression spline for faster estimation of many regressions, especially when we extend to a pixel-level model below. Then these models can be written:
+We denote the average growth for patient $i$ in region $v$ as $G_{i}^{(v)}$. We let $f_v(\cdot)$ be a cubic regression spline estimated on observations from region $v$; we choose a cubic regression spline for faster estimation of many regressions, especially when we extend to a pixel-level model below. Then these models can be written:
 
 $$
 \begin{gather*}
 \begin{split}
-G_{id} = {} & \beta_{0, d} + \beta_{1,d} [\text{Sagittal}]_i + \beta_{2,d} [\text{Metopic}]_i + \\
-& \beta_{3,d} [\text{Right Coronal}]_i + \beta_{4,d} [\text{Left Coronal}]_i + \\
-& \beta_{5,d} [\text{Left and Right Coronal}]_i + \\
-& \beta_{6,d} [\text{Sex: Male}]_i + f_d(Age_i) + \epsilon_{id}
+G_{i}^{(v)} = {} & \beta_{0}^{(v)} + \beta_{1}^{(v)} [\text{Sagittal}]_i + \beta_{2}^{(v)} [\text{Metopic}]_i + \\
+& \beta_{3}^{(v)} [\text{Right Coronal}]_i + \beta_{4}^{(v)} [\text{Left Coronal}]_i + \\
+& \beta_{5}^{(v)} [\text{Left and Right Coronal}]_i + \\
+& \beta_{6}^{(v)} [\text{Sex: Male}]_i + f^{(v)}(Age_i) + \epsilon_{i}^{(v)}
 \end{split} \\ \\
 \begin{split}
-G_{id} = {} & \beta_{0, d} + \beta_{1,d} [\text{Sagittal}]_i + \beta_{2,d} [\text{Metopic}]_i + \\
-&\beta_{3,d} [\text{Right Coronal}]_i + \beta_{4,d} [\text{Left Coronal}]_i + \\
-& \beta_{5,d} [\text{Left and Right Coronal}]_i + \\
-& \beta_{6,d} [\text{Sex: Male}]_i + \beta_{7,d}(Age_i) + \epsilon_{id}
+G_{i}^{(v)} = {} & \beta_{0}^{(v)} + \beta_{1}^{(v)} [\text{Sagittal}]_i + \beta_{2}^{(v)} [\text{Metopic}]_i + \\
+&\beta_{3}^{(v)} [\text{Right Coronal}]_i + \beta_{4}^{(v)} [\text{Left Coronal}]_i + \\
+& \beta_{5}^{(v)} [\text{Left and Right Coronal}]_i + \\
+& \beta_{6}^{(v)} [\text{Sex: Male}]_i + \beta_{7}^{(v)}(Age_i) + \epsilon_{i}^{(v)}
 \end{split} \\ \\
 \begin{split}
-\epsilon_{id} \iid {} & N(0, \sigma^2_d)
+\epsilon_{i}^{(v)} \iid {} & N(0, \sigma^{2 \ (v)})
 \end{split}
 \end{gather*}
 $$
@@ -603,10 +604,11 @@ grid_viz
 
 Next, we use the set of row and column indices (shared among all images) to create a design matrix containing 2-dimensional basis functions that make up a smoother that can be used for every individual image. We use the `mgcv::smoothCon` function.
 
-From this smoother object, we extract the relevant matrices that will allow us to fit the model. Let $m$ be the number of pixels in each image and $K$ be the number of basis functions evaluated on these pixels. Then we extract the $m \times K$ design matrix $\bB$, the $K_c \times K_c$ penalty matrix for the boundary spline ($\bP_c$) and the $K_f \times K_f$ penalty matrix for the interior spline ($\bP_f$). In `mgcv`, The smoother object stores each penalty matrix as a block-diagonal size $K \times K$ matrix, where $K = K_c + K_f$. We denote these $\bP^{(c)}$ and $\bP^{(f)}$:
+From this smoother object, we extract the relevant matrices that will allow us to fit the model. Let $M$ be the number of pixels in each image and $K$ be the number of basis functions evaluated on these pixels. Then we extract the $M \times K$ design matrix $\bB$, the $K_c \times K_c$ penalty matrix for the boundary spline ($\bP_c$) and the $K_f \times K_f$ penalty matrix for the interior spline ($\bP_f$). In `mgcv`, The smoother object stores each penalty matrix as a block-diagonal size $K \times K$ matrix, where $K = K_c + K_f$. We denote these $\bP^{(c)}$ and $\bP^{(f)}$:
 
 $$
 \begin{aligned}
+\\
 \bP^{(c)} &= \begin{bmatrix}
 \bP_c & \smash{\overbrace{\bzero}^{K_c \times K_f}} \\
 \smash{\underbrace{\bzero}_{K_f \times K_c}} & \smash{\underbrace{\bzero}_{K_f \times K_f}}
@@ -622,6 +624,7 @@ $$
 In order to isolate the effect of each separate spline, we also remove the block zero matrices to convert each penalty matrix into the original individual matrices $P_c$ and $P_f$.
 
 To estimate coefficients for this model, we multiply these penalty matrices by smoothing parameters $\lambda_c$ and $\lambda_f$. We then use the "total penalty matrix"
+
 
 $$
 \bP_T = \lambda_c \bP^{(c)} + \lambda_f \bP^{(f)} = 
@@ -647,9 +650,9 @@ First, we identify the outermost points in our data, on which the boundary splin
 
 Then, we plot the "boundary-induced" basis functions: these are the 2-dimensional functions that are defined over the entire matrix. Each boundary-induced function essentially forms the minimal surface over the area that respects its single corresponding boundary basis function. This is described in section 4.1 in the soap film paper (p. 940):
 
-First, suppose values on the boundary follow a function $\bG_i^{(b)}(d) = f_i^{(c)}(d) + \epsilon_i^{(c)}(d)$, where $d$ is the distance along the boundary loop from an arbitrary starting point. 
+First, suppose values on the boundary follow a function $\bG_i^{(c)}(d) = \Delta_i^{(c)}(d) + \epsilon_i^{(c)}(d)$, where $d$ is the distance along the boundary loop from an arbitrary starting point. 
 
-Second, represent that function with the basis expansion $f_i^{(c)}(d) = \sum_{j=1}^{K_c} \gamma^{(c)}_{ij} \delta_j(d)$. To estimate $\bgamma^{(c)}_{i}$, include a penalty functional $\bgamma_{i}^{(c) \top} \bP_c \bgamma^{(c)}_{i}$.
+Second, represent that function with the basis expansion $\Delta_i^{(c)}(d) = \sum_{k=1}^{K_c} \gamma^{(c)}_{ij} \delta_j(d)$. To estimate $\bgamma^{(c)}_{i}$, include a penalty functional $\bgamma_{i}^{(c) \top} \bP_c \bgamma^{(c)}_{i}$.
 
 These basis functions $\boldsymbol{\delta}(d)$ are plotted below:
 
@@ -660,9 +663,9 @@ These basis functions $\boldsymbol{\delta}(d)$ are plotted below:
 soap_basis_cyclic
 ```
 
-Third, for each $j = 1, \ldots, K_c$, determine the basis-specific boundary condition by setting $\gamma^{(c)}_j = 1$ and $\gamma^{(c)}_{j'} = 0, \ j' \neq j$. *I think this means all we're left with is * $\delta_j(d)$. Solve for the function $a_j(x,y)$ which satisfies this boundary condition based on $\delta_j(d)$ and satisfies the equation $\frac{\partial^2 a_j}{\partial x^2} + \frac{\partial^2 a_j}{\partial y^2} = 0$. 
+Third, for each $k = 1, \ldots, K_c$, determine the basis-specific boundary condition by setting $\gamma^{(c)}_k = 1$ and $\gamma^{(c)}_{k'} = 0, \ k' \neq k$. *I think this means all we're left with is* $\delta_k(d)$. Solve for the function $\phi^{(c)}_k(x,y)$ which satisfies this boundary condition based on $\delta_k(d)$ and satisfies the equation $\frac{\partial^2 \phi^{(c)}_k}{\partial x^2} + \frac{\partial^2 \phi^{(c)}_k}{\partial y^2} = 0$. 
 
-Then the "boundary-condition-induced-function" $\alpha_i^{(c)}(x,y)$ has the basis function representation $\alpha_i^{(c)}(x,y) = \sum_{j=1}^{K_c} \gamma^{(c)}_{ij} a_j(x,y)$. The basis functions $\ba(x,y)$ are plotted below:
+Then the "boundary-condition-induced-function" $\Phi_i^{(c)}(x,y)$ has the basis function representation $\Phi_i^{(c)}(x,y) = \sum_{k=1}^{K_c} \gamma^{(c)}_{ik} \phi^{(c)}_k(x,y)$. The basis functions $\bphi^{(c)}(x,y)$ are plotted below:
 
 ```{r}
 #| label: boundary-2d-function-viz
@@ -673,17 +676,17 @@ soap_basis_bd
 
 Last, we plot a sample of interior basis functions. *I think* each interior basis function is defined in a similar form as the boundary-induced functions:
 
-First, suppose the residual values after accounting for the boundary values follow a function $\bG_i(x,y) - \alpha_i^{(c)}(x,y) = h_i^{(f)}(x,y) + \epsilon_i^{(f)}(x,y)$.
+First, suppose the residual values after accounting for the boundary values follow a function $\bG_i(x,y) - \Phi^{(c)}(x,y) = \Phi_i^{(f)}(x,y) + \epsilon_i^{(f)}(x,y)$.
 
-Second, represent that function with the basis expansion $h_i^{(f)}(x,y) = \sum_{l=1}^{K_f} \gamma^{(f)}_{il} z_l(x,y)$.
+Second, represent that function with the basis expansion $\Phi_i^{(f)}(x,y) = \sum_{k=1}^{K_f} \gamma^{(f)}_{ik} \phi^{(f)}_k(x,y)$.
 
-Third, for each basis function $z_l(x,y)$, set up a corresponding 2-dimensional function $\rho_{l}(x,y)$ such that $\rho_{l}(x,y) = 0$ on the boundary, $\frac{\partial^2 \rho_l}{\partial x^2} + \frac{\partial^2 \rho_l}{\partial y^2} = 0$, and $\rho_{l}(x,y)$ rises to a singularity at one corresponding knot $(x^*_{l}, y^*_{l})$.
+Third, to derive each basis function $\phi^{(f)}_k(x,y)$, set up the corresponding 2-dimensional function $\rho_{k}(x,y)$ such that $\rho_{k}(x,y) = 0$ on the boundary, $\frac{\partial^2 \rho_k}{\partial x^2} + \frac{\partial^2 \rho_k}{\partial y^2} = 0$, and $\rho_{k}(x,y)$ rises to a singularity at one corresponding knot $(x^*_{k}, y^*_{k})$.
 
-Fourth, calculate the function $z_l(x,y)$ that solves the equation  $\frac{\partial^2 z_l}{\partial x^2} + \frac{\partial^2 z_l}{\partial y^2} = \rho_l(x,y)$.
+Fourth, solve for the function $\phi^{(f)}_k(x,y)$ as the solution to the equation  $\frac{\partial^2 \phi^{(f)}_k}{\partial x^2} + \frac{\partial^2 \phi^{(f)}_k}{\partial y^2} = \rho_k(x,y)$.
 
 Fifth, to estimate the basis coefficients $\bgamma_i^{(f)}$, include a penalty functional $\bgamma_i^{(f) \top} \bP_f \bgamma_i^{(f)}$.
 
-Then the interior function has the basis function representation $h_i^{(f)}(x,y) = \sum_{l=1}^{K_f} \gamma_{il}^{(f)} z_l(x,y)$. A sample of the basis functions $\bz(x,y)$ are plotted below:
+Then the interior function has the basis function representation $\Phi_i^{(f)}(x,y) = \sum_{k=1}^{K_f} \gamma_{ik}^{(f)} \phi^{(f)}_k(x,y)$. A sample of the basis functions $\bphi^{(f)}(x,y)$ are plotted below:
 
 ```{r}
 #| label: basis-interior-viz
@@ -695,9 +698,9 @@ soap_basis_int
 Finally, for one soap film smoother, we have the basis representation 
 $$
 \begin{aligned}
-\bG_i(x,y) &= a_i^{(c)}(x,y) + h_i^{(f)}(x,y) + \epsilon_i(x,y) \\
-&= \sum_{j=1}^{K_c} \gamma^{(c)}_{ij} a_j(x,y) + \sum_{l=1}^{K_f} \gamma^{(f)}_{il} z_l(x,y) + \epsilon_i(x,y) \\
-&= \begin{bmatrix} \ba (x,y) & \bz (x,y) \end{bmatrix} \begin{bmatrix} \bgamma^{(c)}_{i} \\ \bgamma^{(f)}_{i} \end{bmatrix}
+\bG_i(x,y) &= \Phi_i^{(c)}(x,y) + \Phi_i^{(f)}(x,y) + \epsilon_i(x,y) \\
+&= \sum_{k=1}^{K_c} \gamma^{(c)}_{ik} \phi^{(c)}_k(x,y) + \sum_{k=1}^{K_f} \gamma^{(f)}_{ik} \phi^{(f)}_k(x,y) + \epsilon_i(x,y) \\
+&= \begin{bmatrix} \bphi^{(c)}(x,y) & \bphi^{(f)}(x,y) \end{bmatrix} \begin{bmatrix} \bgamma^{(c)}_{i} \\ \bgamma^{(f)}_{i} \end{bmatrix}
 + \epsilon_i(x,y) \\
 &= \mathcal{B}(x,y) \bgamma_i + \epsilon_i(x, y) \\
 \implies \bG_i &= \bB \bgamma_i + \bepsilon_i.
@@ -1136,7 +1139,7 @@ $$
 \end{bmatrix}
 =
 \begin{bmatrix}
-\bgamma_c & \bgamma_f
+\bgamma^{(c)} & \bgamma^{(f)}
 \end{bmatrix} \\
 \text{ and } \\
 \underbrace{\bB}_{M \times K} &= 
@@ -1153,7 +1156,7 @@ B_1(s_M) & \ldots & B_{K_c}(s_M) & B_{K_c+1}(s_M) & \ldots & B_K(s_M)
 \end{bmatrix}
 =
 \begin{bmatrix}
-\bB_c(\bS) & \bB_f(\bS) \\
+\bB^{(c)}(\bS) & \bB^{(f)}(\bS) \\
 \end{bmatrix}
 .
 \end{aligned}
@@ -1167,7 +1170,7 @@ In our case, it is not appropriate to model $\gamma_{ik}$ as a linear function o
 
 Suppose that there are $Q_U$ covariates in $\bU$ that we assume to be linearly related to $\bgamma$. Let $\tilde{\bU}$ be the $N \times Q_U$ matrix including only these linear terms. Note that in our case, the first of these $Q_U$ columns is a column vector of 1's corresponding to the intercept. 
 
-Next, in our model, one covariate in $\bU$ is the Age of the subject in each image. We assume that age has a non-linear association with growth, and also that the non-linear association will vary by suture fusion type. To put this into practice, we will estimate one non-linear function $\mathcal{H}_{1k}(Age_i)$ for those with no suture fusion, and then will estimate a fusion-specific deviation function for each suture fusion type, $\mathcal{H}_{rk}(Age_i, Fusion_i)$.
+Next, in our model, one covariate in $\bU$ is the Age of the subject in each image. We assume that age has a non-linear association with growth, and also that the non-linear association will vary by suture fusion type. To put this into practice, we will estimate one non-linear function $\Phi_{1k}(Age_i)$ for those with no suture fusion, and then will estimate a fusion-specific deviation function for each suture fusion type, $\mathcal{H}_{rk}(Age_i, Fusion_i)$.
 
 Putting these together, we assume
 
@@ -1180,7 +1183,7 @@ Next, we convert this equation into matrix form. The linear terms are relatively
 $$
 \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} = 
 \begin{bmatrix}
-1 & \tilde{U}_{i2} & \ldots & \theta_{Q_U, k}
+1 & \tilde{U}_{i2} & \ldots & \tilde{U}_{iQ_U}
 \end{bmatrix} \begin{bmatrix}
 \theta_{1k} \\ \vdots \\ \theta_{Q_U,k}
 \end{bmatrix} = \tilde{\bU}_i \btheta_k.
@@ -1196,7 +1199,7 @@ h_1(Age_i) & \ldots & h_L(Age_i)
 \end{bmatrix} \begin{bmatrix}
 \alpha_{11k} \\ \vdots \\ \alpha_{1Lk}
 \end{bmatrix} \\
-&= \bh_{1i} \balpha_{1k} \\ \\
+&= \bh_{i1} \balpha_{1k} \\ \\
 \mathcal{H}_{rk}(Age_i, Fusion_i) &= \sum_{l=1}^L \alpha_{rlk} h_l(Age_i) * I(Fusion_i = r) \\
 &= I(Fusion_i = r) * \begin{bmatrix}
 h_1(Age_i) & \ldots & h_L(Age_i)
@@ -1208,7 +1211,7 @@ h_{r1}^*(Age_i, Fusion_i) & \ldots & h_{rL}^*(Age_i, Fusion_i)
 \end{bmatrix} \begin{bmatrix}
 \alpha_{r1k} \\ \vdots \\ \alpha_{rLk}
 \end{bmatrix} \\
-&= \bh_{ri}^* \balpha_{rk}, \\ \\
+&= \bh_{ir}^* \balpha_{rk}, \\ \\
 \text{where } h_{rl}^*(Age_i, Fusion_i) &= I(Fusion_i = r) * h_l(Age_i)
 \end{aligned}
 $$
@@ -1249,7 +1252,7 @@ Then altogether, we can write
 $$
 \begin{aligned}
 E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} +  \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i) \\
-= {} & \tilde{\bU}_i \btheta_k + \bh_{1i} \balpha_{1k} + \sum_{r = 2}^R \bh_{ri}^* \balpha_{rk} \\ \\
+= {} & \tilde{\bU}_i \btheta_k + \bh_{i1} \balpha_{1k} + \sum_{r = 2}^R \bh_{ir}^* \balpha_{rk} \\ \\
 \implies E[\gamma_{ik}] = {} & \bbeta_k^\top \bW_i^\top \\
 \implies E[\bgamma_i] = {} & \bbeta^\top \bW_i^\top \\
 \implies E[\bgamma_i^\top] = {} & \bW_i \bbeta \\
@@ -1280,7 +1283,7 @@ Recall that $\bbeta$ has a complicated structure:
 $$
 \begin{aligned}
 \underbrace{\bbeta}_{Q \times K} &= \begin{bmatrix} 
-\bbeta_c & \bbeta_f
+\bbeta^{(c)} & \bbeta^{(f)}
 \end{bmatrix} \\
 &= 
 \begin{bmatrix} 
@@ -1302,8 +1305,8 @@ $$
 \alpha_{R L 1} & \ldots & \alpha_{R L K_c} & \alpha_{R, L, K_c + 1} & \ldots & \alpha_{R L K}
 \end{bmatrix} \\
 &= \begin{bmatrix} 
-\btheta_c & \btheta_f \\
-\balpha_c & \balpha_f \\
+\btheta^{(c)} & \btheta^{(f)} \\
+\balpha^{(c)} & \balpha^{(f)} \\
 \end{bmatrix} \\
 &= \begin{bmatrix} 
 \btheta \\ \balpha \\
