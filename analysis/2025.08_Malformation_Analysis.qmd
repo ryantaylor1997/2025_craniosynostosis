@@ -663,7 +663,7 @@ These basis functions $\boldsymbol{\delta}(d)$ are plotted below:
 soap_basis_cyclic
 ```
 
-Third, for each $k = 1, \ldots, K_c$, determine the basis-specific boundary condition by setting $\gamma^{(c)}_k = 1$ and $\gamma^{(c)}_{k'} = 0, \ k' \neq k$. *I think this means all we're left with is* $\delta_k(d)$. Solve for the function $\phi^{(c)}_k(x,y)$ which satisfies this boundary condition based on $\delta_k(d)$ and satisfies the equation $\frac{\partial^2 \phi^{(c)}_k}{\partial x^2} + \frac{\partial^2 \phi^{(c)}_k}{\partial y^2} = 0$. 
+Third, for each $k = 1, \ldots, K_c$, determine the basis-specific boundary condition by setting $\gamma^{(c)}_k = 1$ and $\gamma^{(c)}_{k'} = 0, \ k' \neq k$. *I think this means all we're left with is* $\delta_k(d)$. Solve for the function $ \phi^{(c)}_k(x,y)$ which satisfies this boundary condition based on $\delta_k(d)$ and satisfies the equation $\frac{\partial^2 \phi^{(c)}_k}{\partial x^2} + \frac{\partial^2 \phi^{(c)}_k}{\partial y^2} = 0$. 
 
 Then the "boundary-condition-induced-function" $\Phi_i^{(c)}(x,y)$ has the basis function representation $\Phi_i^{(c)}(x,y) = \sum_{k=1}^{K_c} \gamma^{(c)}_{ik} \phi^{(c)}_k(x,y)$. The basis functions $\bphi^{(c)}(x,y)$ are plotted below:
 
@@ -1353,22 +1353,25 @@ We can now express all of our distributional assumptions.
 
 ### Data-Generating Mechanism
 
-We write the data-generating mechanism below. Scalar parameters that are directly set are highlighted in $\color{red}{\text{red}}$ the first time they appear; other parameters that we will recover but are drawn from a distribution are highlighted in $\color{blue}{\text{blue}}$; and given matrices are highlighted in $\color{green}{\text{green}}$:
+We write the data-generating mechanism below. Given matrices are highlighted in $\color{green}{\text{green}}$; scalar parameters that are directly set in simulations are highlighted in $\color{red}{\text{red}}$ the first time they appear; other parameters that are recovered but are drawn from a distribution in a simulation are highlighted in $\color{blue}{\text{blue}}$; and the outcome data are highlighted in $\color{violet}{\text{violet}}$.
 
 $$
 \begin{aligned}
-\underbrace{vec(\bG)}_{N*M \times 1} &= [ {\color{green} \bB } \otimes \bI_N] vec({\color{blue}  \bgamma }) + \bepsilon_G \\
-\bepsilon_G & \sim \mathcal{N} ( \bzero, {\color{red} \sigma^2 } \bI_{N*M}) \\
-\underbrace{vec(\bgamma)}_{N*K \times 1} &= [\bI_K \otimes {\color{green} \bW}] vec({\color{blue} \bbeta }) + \bepsilon_\gamma \\
-\bepsilon_\gamma & \sim \mathcal{N} ( \bzero, \sigma^2 [\bP_T^{(\gamma) -} \otimes \bI_N]) \\
-\bP_T^{(\gamma)} &= \begin{bmatrix}
+\underbrace{{\color{violet} \bG}}_{N \times M} &= {\color{blue}  \bgamma } {\color{green} \bB^\top } + \bepsilon^{(G)} \\
+\bepsilon^{(G)}_{im} & \iid \mathcal{N} ( 0, {\color{red} \sigma^2 }) \\
+\underbrace{\bgamma}_{N \times K} &= {\color{green} \bW} {\color{blue} \bbeta } + \bepsilon^{(\gamma)} \\
+\bepsilon^{(\gamma)}_{i+} & \iid \mathcal{N} ( \bzero, \sigma^2 \bP_T^{(\gamma) -}) \\
+\bP_T^{(\gamma)} &:= \begin{bmatrix}
 \color{red}{ \lambda_c } {\color{green} \bP_c} & \bzero \\
 \bzero & {\color{red} \lambda_f } {\color{green} \bP_f}
 \end{bmatrix} \\
-\underbrace{vec(\bbeta)}_{Q*K \times 1} & \sim \mathcal{N} (\bzero, {\color{red} \tau^2 } [\bI_K \otimes \bP_T^{(\beta) -}]) \\
-\bP_T^{(\beta)} &= \begin{bmatrix}
+\underbrace{\bbeta}_{Q \times K} & := \begin{bmatrix}
+\bbeta_{+1} & \ldots & \bbeta_{+K}
+\end{bmatrix} \\
+\bbeta_{+k} & \iid \mathcal{N} (\bzero, {\color{red} \tau^2 } \bP_T^{(\beta) -}) \\
+\bP_T^{(\beta)} &:= \begin{bmatrix}
 \bI_{Q_U} & \bzero \\
-\bzero & {\color{red} \lambda_\alpha } [\bI_R \otimes {\color{green} \bP_\alpha}]
+\bzero & {\color{red} \lambda_\alpha } (\bI_R \otimes {\color{green} \bP_\alpha})
 \end{bmatrix}
 \end{aligned}
 $$

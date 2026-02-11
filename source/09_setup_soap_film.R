@@ -78,6 +78,9 @@ cranio_soap <- smoothCon(
 # Keep the actual smooth list
 cranio_soap <- cranio_soap[[1]]
 
+# Save soap film object
+save(cranio_soap,
+     file = here::here("analysis", "intermediate", "soap_object.rda"))
 
 # Create separated soap film matrices -------------------------------------
 

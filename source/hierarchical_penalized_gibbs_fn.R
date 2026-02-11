@@ -210,6 +210,10 @@ hierarchical_penalized_gibbs <- function(
 
     pen_demo_total <- Reduce("+", pen_demo_lambda)
 
+    pen_basis_total <- Matrix(pen_basis_total)
+
+    pen_demo_total <- Matrix(pen_demo_total)
+
     timer["penalty_total"] <- timer["penalty_total"] +
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
@@ -258,7 +262,7 @@ hierarchical_penalized_gibbs <- function(
 
     # Take inverse that comprises most of the variance
     # -> tol = 0 avoids testing for whether it is near-singular
-    penalties_kron_inv <- solve(penalties_kron, tol = 0)
+    penalties_kron_inv <- solve(penalties_kron)
 
     ## Compute expectation and variance
     beta_expect <- penalties_kron_inv %*%

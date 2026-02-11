@@ -1,0 +1,849 @@
+---
+title: "Visualizing Hierarchical Simulations"
+format: 
+  html:
+    embed-resources: true
+    toc: true
+    toc-depth: 2
+    toc-title: Contents
+    toc-location: left
+    df-print: kable
+    theme: sandstone
+    highlight: haddock
+    code-fold: true
+    code-overflow: wrap
+    knitr:
+      opts_chunk:
+        echo: true,
+        include: true
+        message: false,
+        warning: false
+        results: markup
+        fig.align: center
+        fig.height: 5
+        fig.width: 7
+        R.options:
+          scipen: 999
+          knitr.kable.NA: ""
+editor: source
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+rm(list = ls()); gc()
+
+# Load packages
+# if(!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  
+  # Format
+  latex2exp, table1, gtsummary, ggridges, forestplot,
+  broom.helpers, broom.mixed, patchwork, colorRamps,
+  
+  # Modeling
+  mgcv,
+  
+  # Useful extensions
+  gtools, corrplot, MASS, car, Matrix, mvtnorm,
+  
+  # Basics
+  DescTools, tidyverse, magrittr, janitor, glue, skimr,
+  knitr, kableExtra, ggpubr, ggpmisc,
+)
+
+source(here::here("source", "construct_smooth_ref_code_fns.R"))
+source(here::here("source", "mv_normal_matrix_fn.R"))
+```
+
+# Overview
+
+This workbook explains and visualizes the data-generating mechanism or our combined hierarchical model. We simulate simplified data from our model and visualize the components of this simulation.
+
+## Data-Generating Mechanism
+
+We assume the following data-generating mechanism. 
+
+Let $G_i(s_m)$ be an outcome of intracranial growth at location $s_m$ in image $i$, where $i = 1, \ldots, N$ and $m = 1, \ldots, M$. Let 
+$$
+\underbrace{\mathbf{G}}_{N \times M} = \begin{bmatrix}
+G_1(s_1) & \ldots & G_1(s_M) \\
+\vdots & \ddots & \vdots \\
+G_N(s_1) & \ldots & G_N(s_M)
+\end{bmatrix}
+$$
+
+be the matrix of growth outcomes for all images at all locations.
+
+Let $\mathbf{W}_{i}$ be a $1 \times Q$ demographic row vector associated with image $i$, and let 
+$$
+\underbrace{\mathbf{W}}_{N \times Q} = \begin{bmatrix}
+\mathbf{W}_{1} \\
+\vdots \\
+\mathbf{W}_{N}
+\end{bmatrix}
+$$
+
+be the (known) matrix of demographics associated with all images.
+
+Next, let $B_k(s_m)$ be the realization of soap film basis function $k$ at location $s_m$, where $k = 1, \ldots, K$, and let
+
+$$
+\underbrace{\mathbf{B}}_{M \times K} = \begin{bmatrix}
+B_1(s_1) & \ldots & B_K(s_1) \\
+\vdots & \ddots & \vdots \\
+B_1(s_M) & \ldots & B_K(s_M)
+\end{bmatrix}
+$$
+
+be the matrix of (known) realizations of all basis functions at all locations.
+
+Then we assume that $\mathbf{G}$ is a function of these spatial basis functions and the demographics, and we require three different (known) penalty matrices to model these relationships: 
+
+$\mathbf{P}_c$ is a penalty matrix on the boundary-induced soap film basis functions, which make up the first $K_c$ of the $K$ basis functions in $\mathbf{B}$.
+
+$\mathbf{P}_f$ is a penalty matrix on the interior soap film basis functions, which make up the last $K_f$ of the $K$ basis functions in $\mathbf{B}$.
+
+$\mathbf{P}_\alpha$ is a penalty matrix on nonlinear demographic effects modeled by an $L$-dimension basis expansion.
+
+These known penalty matrices are combined with scalar smoothing parameters to form the total penalty matrices used in our model. For the full set of spatial basis functions, we define
+
+$$
+\mathbf{P}_T^{(\gamma)} := \begin{bmatrix}
+\lambda_c \mathbf{P}_c & \boldsymbol{0} \\
+\boldsymbol{0} & \lambda_f \mathbf{P}_f
+\end{bmatrix}.
+$$
+
+For the full set of demographics, we assume that $Q_U$ demographics are unpenalized parameters, and that there are $R$ different suture fusions for which we want to estimate a nonlinear effect. Therefore,
+
+$$
+\mathbf{P}_T^{(\beta)} := \begin{bmatrix}
+\mathbf{I}_{Q_U} & \boldsymbol{0} \\
+\boldsymbol{0} & \lambda_\alpha (\mathbf{I}_R \otimes \mathbf{P}_\alpha)
+\end{bmatrix}.
+$$
+
+Now, our data generating mechanism can be written:
+
+$$
+\begin{aligned}
+\mathbf{G} &= \boldsymbol{\gamma} \mathbf{B}^\top + \boldsymbol{\epsilon}^{(G)} \\
+\boldsymbol{\gamma} &= \mathbf{W} \boldsymbol{\beta} + \boldsymbol{\epsilon}^{(\gamma)} \\
+\boldsymbol{\epsilon}^{(G)}_{im} & \overset{iid}{\sim} \mathcal{N}(0, \sigma^2) \\
+\boldsymbol{\epsilon}^{(\gamma)}_{i \bullet} & \overset{iid}{\sim} \mathcal{N}_K(\boldsymbol{0}, \sigma^2 \mathbf{P}_T^{(\gamma) -}) \\
+\boldsymbol{\beta}_{\bullet k} & \overset{iid}{\sim} \mathcal{N}_Q(\boldsymbol{0}, \tau^2 \mathbf{P}_T^{(\beta) -}).
+\end{aligned}
+$$
+
+# Brain Shape Basis Functions
+
+To implement this, we first need to reload $\mathbf{B}$, the matrix of soap film basis function realizations across the brain shape, which we create as part of the model fitting process. Recall that this shared across every image.
+
+```{r}
+#| label: load-brain-shape
+
+# Load soap film object for basis functions
+load(file = here::here("analysis", "intermediate", "soap_object.rda"))
+
+# Load mapping from basis points to locations
+load(file = here::here("analysis", "intermediate", "matrix_indices.rda"))
+```
+
+These basis functions are generated by `mgcv` using a soap film smoothing basis. The first nine ($K_c$) capture patterns around the boundary of the domain, and the remaining 60 ($K_f$) capture the values within the interior of the domain.
+
+```{r}
+#| label: basis-fn-viz
+#| fig.width: 10
+#| fig.height: 20
+
+# Add row numbers to cell-location mapping
+cell_loc_map <- so_matrix_pts %>% 
+  rownames_to_column("loc") %>% 
+  mutate(loc = as.integer(loc))
+
+# Reshape basis function values to long df and merge with locations
+soap_fn_df <- cranio_soap$X %>% 
+  reshape2::melt() %>% 
+  rename(loc = Var1, fn = Var2) %>% 
+  left_join(cell_loc_map)
+
+# Plot basis functions
+soap_basis_plot <- ggplot(soap_fn_df, 
+                          aes(x = row, y = col, fill = value)) +
+  geom_raster() +
+  facet_wrap(~fn, ncol = 9) +
+  coord_fixed() +
+  scale_fill_viridis_c() +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+soap_basis_plot
+```
+
+The associated penalty matrices $\mathbf{P}_c$ and $\mathbf{P}_f$ measuring the wiggliness of these basis functions over the domain are represented below.
+
+```{r}
+#| label: basis-penalty-viz
+
+basis_s <- map(
+  1:length(cranio_soap$S), 
+  ~ cranio_soap$S[[.x]] %>% 
+    reshape2::melt() %>% 
+    rename(row = Var1, col = Var2) %>% 
+    mutate(index = .x)
+) %>% 
+  bind_rows()
+
+basis_s_plot <- basis_s %>% 
+  group_split(index) %>% 
+  map(
+    ~ggplot(., aes(x = col, y = -row, fill = value)) +
+      geom_tile() +
+      facet_wrap(~index, nrow = 1) +
+      scale_fill_gradient2() +
+      scale_x_continuous(breaks = scales::breaks_width(10)) +
+      scale_y_continuous(breaks = scales::breaks_width(10)) +
+      theme_minimal() +
+      theme(legend.position = "bottom") +
+      coord_fixed()
+  ) %>% 
+  ggarrange(plotlist = ., nrow = 1) %>% 
+  annotate_figure(top = "Soap Film Penalty Matrices")
+
+basis_s_plot
+```
+
+
+# Individual Demographics
+
+## Demographic Generation
+
+Next, we generate a simplified set of demographics for each individual. In our model, we consider three characteristics or each individual: their sex (binary), age (continuous), and suture fusion type (categorical). We denote the matrix of these demographics for each individual as $\mathbf{U}$.
+
+```{r}
+#| label: demographic-hyperparameters
+
+### Set parameters for simulating demographics
+
+# Number of patients
+n_pats <- 80
+
+# Max age of these patients
+age_max <- 365
+
+# Proportion of sex = 1
+prop_sex <- 0.5
+```
+
+For this simulation, we randomly generate `r n_pats` draws of age from a uniform distribution from 0 to `r age_max`. This is simplified from our data, where the age distribution appears closer to a Gamma distribution, especially when we only consider patients with suture fusions.
+
+Then, we randomly assign $Sex = 1$ to these age values with probability `r prop_sex`. 
+
+Finally, we assign the simulated suture fusion types of these patients: half are assigned to be "Normative," one quarter are assigned to be "Fusion 1," and one quarter are assigned to be "Fusion 2."
+
+```{r}
+#| label: create-demographics
+
+# Set random seed
+set.seed(978)
+
+demo_test_df <- tibble(
+  sex = rbinom(n_pats, 1, prop_sex),
+  age = runif(n_pats, max = age_max),
+  fusion_type = c(rep("Normative", n_pats / 2),
+                  rep("Fusion_1", n_pats / 4),
+                  rep("Fusion_2", n_pats / 4))
+) %>%
+  mutate(fusion_type = factor(fusion_type,
+                              levels = c("Normative", "Fusion_1", "Fusion_2")),
+         sex = as.factor(sex))
+```
+
+The resulting distribution of ages is:
+
+```{r}
+#| label: demographic-viz
+
+demo_plot <- ggplot(demo_test_df) +
+  geom_area(stat = "density", aes(x = age, fill = fusion_type)) +
+  facet_grid(fusion_type ~ sex,
+             labeller = labeller(.rows = label_value, .cols = label_both)) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+demo_plot
+```
+
+## Demographic Model Matrix
+
+Next, we use these simulated demographics to generate the demographic model matrix $\mathbf{W}$. We add an intercept column of all 1's and retain the sex column as it is, but we transform the age and fusion type columns with a basis spline expansion. 
+
+```{r}
+#| label: demographic-age-function-params
+
+# Set number of knots to use for each age expansion
+demo_age_knots <- 10
+```
+
+We use a cubic regression spline with `r demo_age_knots` basis functions for the nonlinear function of age. To construct the basis expansion, we use the `mgcv::smooth.construct2` function. We denote these functions as $h^*_1(Age), \ldots, h^*_{L+1}(Age)$.
+
+```{r}
+#| label: demographic-basis-expansion
+
+# Construct basis expansion and penalty matrix
+demo_smooth_test <- smooth.construct2(
+  s(age, bs = "cr", k = demo_age_knots),
+  data = demo_test_df, knots = NULL
+)
+```
+
+Because of the skewed distribution of ages in our data, these basis functions and their associated penalty matrix $\mathbf{P}_\alpha$ take the following form:
+
+```{r}
+#| label: demo-expansion-viz
+
+# Join basis function values with age
+demo_expansion_df <- demo_smooth_test$X %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, fn = Var2) %>% 
+  left_join(demo_test_df %>% mutate(row = 1:n()))
+
+# Plot basis functions
+
+demo_basis_plot <- ggplot(demo_expansion_df) +
+  geom_line(aes(x = age, y = value, color = as.factor(fn))) +
+  scale_color_brewer(palette = "Paired") +
+  geom_point(inherit.aes = F,
+             data = enframe(demo_smooth_test$xp),
+             aes(x = value, y = 0),
+             fill = "yellow", shape = 23) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(x = "Age", y = "Function Value", color = "Basis Function")
+
+demo_basis_plot
+
+# Plot penalty matrix
+demo_expansion_s_plot <- demo_smooth_test$S[[1]] %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, col = Var2) %>% 
+  ggplot(aes(x = col, y = -row, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2() +
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  scale_y_continuous(breaks = scales::breaks_width(1)) +
+  labs(title = "Demographics Penalty Matrix")
+
+demo_expansion_s_plot
+```
+
+For our model assumptions, we assume that these basis functions are added as covariates in an additive model that already contains an intercept. Therefore, we will have identifiability constraints if we keep all $L+1$ basis functions describing age. To address this issue, we center each of the basis functions and remove the last one. Likewise, we remove the last row and column of the penalty matrix from this smooth.
+
+In addition, we want to estimate the effect of each suture fusion type as a deviation from Normative growth associated with age. Therefore, we transform the design matrix of basis functions into a "reference-coded" set of basis expansions. The nonlinear age effect for all patients is estimated using the normative set of basis functions, and a separate nonlinear age-related effect is estimated for each of the suture fusions as an additive effect on top of this normative effect.
+
+```{r}
+#| label: setup-reference-smooth
+
+# Attach name of the dataset to this smooth
+attr(demo_smooth_test, "data") <- "demo_test_df"
+
+# Use function to reference-code smooth by fusion type
+demo_ingredients_test <- setup_reference_model(
+  sm = demo_smooth_test,
+  by_var = "fusion_type", param_formula = ~sex
+)
+
+# Combine suture fusion penalties so we estimate the same lambda
+demo_penalty_list_test <- list(demo_ingredients_test$S[[1]],
+                               Reduce("+", demo_ingredients_test$S[-1]))
+```
+
+To illustrate the result, we summarize the average basis function values by basis function and by suture type. We also plot the values in the penalty matrices representing the two parametric covariates and the 27 penalized covariates. The first penalty matrix will not multiplied by a smoothing constant, and the second will be multiplied by $\lambda_\alpha$.
+
+```{r}
+#| label: ref-smooth-viz
+
+# Reshape design matrix
+demo_smooth_x <- demo_ingredients_test$X %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, fn = Var2) %>% 
+  left_join(demo_test_df %>% mutate(row = 1:n()))
+
+# Summarize function means
+demo_smooth_tbl <- demo_smooth_x %>% 
+  group_by(fusion_type, fn) %>% 
+  summarize(value = mean(value)) %>% 
+  ungroup() %>% 
+  pivot_wider(names_from = fusion_type, values_from = value) %>% 
+  filter(fn >= 3)
+
+kbl(demo_smooth_tbl, 
+    caption = "Demographic Column Averages by Fusion", 
+    digits = 2) %>% 
+  kable_classic(full_width = F) %>% 
+  column_spec(2, color = "white",
+              background = spec_color(na_if(demo_smooth_tbl[[2]], 0))) %>% 
+  column_spec(3, color = "white",
+              background = spec_color(na_if(demo_smooth_tbl[[3]], 0))) %>% 
+  column_spec(4, color = "white",
+              background = spec_color(na_if(demo_smooth_tbl[[4]], 0)))
+
+## Plot penalty matrix
+
+# Reshape (total) covariance matrix
+demo_smooth_s <- map(
+  1:length(demo_penalty_list_test), 
+  ~ demo_penalty_list_test[[.x]] %>% 
+    reshape2::melt() %>% 
+    rename(row = Var1, col = Var2) %>% 
+    mutate(index = .x)
+) %>% 
+  bind_rows()
+
+demo_s_plot <- demo_smooth_s %>% 
+  group_split(index) %>% 
+  map(
+    ~ggplot(., aes(x = col, y = -row, fill = value)) +
+      geom_tile() +
+      facet_wrap(~index, nrow = 1) +
+      scale_fill_gradient2() +
+      scale_x_continuous(breaks = scales::breaks_width(2)) +
+      scale_y_continuous(breaks = scales::breaks_width(2)) +
+      theme_minimal() +
+      theme(legend.position = "bottom") +
+      coord_fixed()
+  ) %>% 
+  ggarrange(plotlist = ., nrow = 1)
+
+demo_s_plot
+```
+
+# Data Simulation
+
+With the basis matrix and demographic matrix, we have most of the necessary ingredients to simulate the data. The last step to do so is to define the scalar parameters that will contribute to the distributions we draw from.
+
+## Scalar Parameters
+
+```{r}
+#| label: scalar-params
+
+# Scalar parameters for outcome data simulation
+sigmasq <- 2
+
+tausq <- 0.001
+
+lambdas_basis <- c(0.03, 0.01)
+
+lambdas_demo <- 5
+
+# Set other arguments for the data simulation function
+demo_has_unpenalized = T
+basis_mx = cranio_soap$X
+demo_mx = demo_ingredients_test$X
+penalty_basis_list = cranio_soap$S
+penalty_demo_list = demo_penalty_list_test
+```
+
+We use the scalar parameters:
+
+$$
+\begin{aligned}
+\sigma^2 &= `r sigmasq` \quad \text{(Residual variance)} \\
+\tau^2 &= `r tausq` \quad \text{(Demographic effect scale)} \\
+\lambda_c &= `r lambdas_basis[[1]]` \quad \text{(Smoothing constant for soap film boundary)} \\
+\lambda_f &= `r lambdas_basis[[2]]` \quad \text{(Smoothing constant for soap film interior)} \\
+\lambda_\alpha &= `r lambdas_demo` \quad \text{(Smoothing constant for age effect functions)}
+\end{aligned}
+$$
+```{r}
+#| label: initialize-function-inputs
+
+### Save dimensions
+N <- nrow(demo_mx)
+M <- nrow(basis_mx)
+K <- ncol(basis_mx)
+Q <- ncol(demo_mx)
+```
+
+
+## Total Penalty Matrices
+
+Next, we combine the smoothing terms with the given penalty matrices to construct the "total" penalty matrices. This involves two steps:
+
+$$
+\begin{aligned}
+\mathbf{P}_T^{(\gamma)} &= \lambda_c 
+\begin{bmatrix}
+\mathbf{P}_c & \boldsymbol{0} \\
+\boldsymbol{0} & \boldsymbol{0}
+\end{bmatrix} + 
+\lambda_f
+\begin{bmatrix}
+\boldsymbol{0} & \boldsymbol{0} \\
+\boldsymbol{0} & \mathbf{P}_f
+\end{bmatrix} \\
+\mathbf{P}_T^{(\beta)} &= 1
+\begin{bmatrix}
+\mathbf{I}_{Q_U} & \boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} \\
+\boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} \\
+\boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} \\
+\boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0}
+\end{bmatrix} + 
+\lambda_\alpha
+\begin{bmatrix}
+\boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} \\
+\boldsymbol{0} & \mathbf{P}_\alpha & \boldsymbol{0} & \boldsymbol{0} \\
+\boldsymbol{0} & \boldsymbol{0} & \mathbf{P}_\alpha & \boldsymbol{0} \\
+\boldsymbol{0} & \boldsymbol{0} & \boldsymbol{0} & \mathbf{P}_\alpha
+\end{bmatrix}.
+\end{aligned}
+$$
+
+```{r}
+#| label: total-penalty-matrices
+
+### Combine parameters with given matrices
+
+# Add 1 to multiply instead of lambda for unpenalized demographics
+lambda_mult_demo <- if(demo_has_unpenalized){
+  c(1, lambdas_demo)
+} else {
+  lambdas_demo
+}
+
+### Total Penalty Matrices
+
+# Multiply lambdas by demographic penalty matrix
+penalty_total_demo_list <- map2(lambda_mult_demo, penalty_demo_list,
+                                ~.x * .y)
+
+penalty_total_basis_list <- map2(lambdas_basis, penalty_basis_list,
+                                 ~.x * .y)
+
+# Sum block diagonal matrices together
+penalty_total_demo_mx <- Reduce("+", penalty_total_demo_list)
+
+penalty_total_basis_mx <- Reduce("+", penalty_total_basis_list)
+```
+
+## Prior Variance Terms
+
+With the total variance matrices constructed, we take their pseudo-inverses. Each penalty matrix is not full-rank, so our prior assumptions for $\boldsymbol{\epsilon}^{(\gamma)}$ and $\boldsymbol{\beta}$ are improper, but *we think* they result in proper posterior distributions.
+
+```{r}
+#| label: prior-variance-matrices
+
+### Moments for generated parameters
+
+# Take generalized inverse of total penalty matrices
+penalty_var_demo <- ginv(as.matrix(penalty_total_demo_mx))
+
+penalty_var_basis <- ginv(as.matrix(penalty_total_basis_mx))
+
+# Convert to efficient Matrix format
+penalty_var_demo <- Matrix(penalty_var_demo)
+
+penalty_var_basis <- Matrix(penalty_var_basis)
+```
+
+Last, we multiply each matrix by its respective scaling term, since the prior variance of $\boldsymbol{\epsilon}^{(\gamma)}_{i \bullet}$ is $\sigma^2 \mathbf{P}_T^{(\gamma) -}$, and the prior variance of $\boldsymbol{\beta}_{\bullet k}$ is $\tau^2 \mathbf{P}_T^{(\beta) -}$.
+
+```{r}
+#| label: prior-variance-scale
+
+# Scale inverse penalty matrices by scalar variance terms
+var_demo_tau <- tausq * penalty_var_demo
+
+var_basis_sigma <- sigmasq * penalty_var_basis
+```
+
+## Generated Parameters
+
+Finally, we are able to calculate parameters. We draw $\boldsymbol{\beta}, \ \boldsymbol{\epsilon}^{(\gamma)}, \text{ and } \boldsymbol{\epsilon}^{(G)}$ as described above. We use the function `mvtnorm::rmvnorm` and take draws from a multivariate normal distribution using Singular Value Decomposition.
+
+```{r}
+#| label: draw-params
+
+set.seed(413)
+
+### Draw first-level parameters
+
+# Draw betas as K iid Q-length vectors
+demo_effect_mx <- Matrix(t(
+  rmvnorm(K, mean = rep(0, Q), sigma = as.matrix(var_demo_tau),
+          method = "svd")
+))
+
+# Draw epsilon-gammas as N iid K-length vectors
+epsilon_gamma <- rmvnorm(N, mean = rep(0, K), sigma = as.matrix(var_basis_sigma),
+                         method = "svd")
+
+# Draw epsilon-Gs as N*M iid scalars
+epsilon_G <- rnorm(N*M, 0, sigmasq)
+
+epsilon_G_mx <- Matrix(epsilon_G, N, M)
+```
+
+Next, we combine these parameters with the known matrices to generate $\boldsymbol{\gamma}$ and $\mathbf{G}$.
+
+```{r}
+#| label: data-and-gamma
+
+# Calculate soap film coefficients
+gamma_mx <- demo_mx %*% demo_effect_mx + epsilon_gamma
+
+# Calculate outcome data
+outcome_mx_sim <- tcrossprod(gamma_mx, basis_mx) + epsilon_G_mx
+
+```
+
+## Parameter Effects
+
+With these generated parameters, we can visualize the implied effects of our demographics and the implied outcomes generated.
+
+```{r}
+#| label: without-errors
+
+### Calculate true outcome without error
+outcome_true <- tcrossprod(gamma_mx, basis_mx)
+
+# Create dense demographic data to visualize effect of betas
+demo_newdata <- demo_test_df %>%
+  mutate(min_age = min(age),
+         max_age = max(age)) %>%
+  distinct(fusion_type, min_age, max_age) %>%
+  rowwise() %>%
+  mutate(age = list(seq(min_age, max_age, length.out = 50))) %>%
+  ungroup() %>%
+  mutate(sex = 0) %>%
+  unnest(age) %>% 
+  mutate(sex = factor(sex, levels = levels(demo_test_df$sex)))
+
+demo_new_design <- setup_reference_model(
+  sm = demo_smooth_test, newdata = demo_newdata,
+  by_var = "fusion_type", param_formula = ~sex
+)$X
+
+# Calculate true gamma without error
+gamma_effect <- demo_new_design %*% demo_effect_mx
+
+gamma_effect_df <- gamma_effect %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  bind_cols(demo_newdata) %>% 
+  pivot_longer(matches("V"), names_to = "Gamma") %>% 
+  mutate(Gamma = as.numeric(str_remove(Gamma, "V")))
+
+```
+
+```{r}
+#| label: gamma-viz
+#| fig.width: 10
+#| fig.height: 15
+
+gamma_plot <- ggplot(gamma_effect_df,
+                     aes(x = age, y = value, color = fusion_type)) +
+  geom_line() +
+  facet_wrap(~Gamma, labeller = label_both) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Age", y = "Gamma Value",
+       title = "True Simulated Age Effects on Gammas")
+
+gamma_plot
+```
+
+```{r}
+#| label: outcome-viz
+
+# Reshape outcome data without errors for plotting
+outcome_long_df <- outcome_true %>% 
+  as.matrix() %>% 
+  reshape2::melt() %>% 
+  rename(subj_num = Var1, loc_num = Var2) %>% 
+  left_join(demo_test_df %>% mutate(subj_num = 1:n())) %>% 
+  left_join(so_matrix_pts %>% mutate(loc_num = 1:n())) %>% 
+  mutate(age_cut = quantcut(age, 5))
+
+# Summarize mean outcomes by age, fusion, and location
+outcome_summ_age_fusion <- outcome_long_df %>% 
+  group_by(fusion_type, age_cut, loc_num, row, col) %>% 
+  summarize(mean_val = mean(value)) %>% 
+  ungroup()
+
+# Plot summary by age and fusion
+outcome_fusion_age_plot <- ggplot(outcome_summ_age_fusion, 
+                                  aes(x = row, y = col, fill = mean_val)) +
+  geom_raster() +
+  facet_grid(age_cut~fusion_type) +
+  coord_fixed() +
+  scale_fill_viridis_c() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  labs(title = "Age-Fusion Summaries of True Outcomes")
+
+outcome_fusion_age_plot
+```
+
+# Hierarchical Gibbs Sampler
+
+```{r}
+#| label: test Gibbs sampler
+
+# Set arguments
+outcome_mx = outcome_mx_sim;
+basis_mx = cranio_soap$X;
+demo_mx = demo_ingredients_test$X;
+pen_basis = cranio_soap$S;
+pen_demo = demo_penalty_list_test;
+basis_has_unpenalized = FALSE;
+demo_has_unpenalized = TRUE;
+gamma0 = 0;
+beta0 = 0;
+sigmasq0 = 1;
+tausq0 = 1;
+lambda_basis0 = 0.1;
+lambda_demo0 = 0.01;
+a_sigma_pri = 1;
+b_sigma_pri = 1;
+a_gamma_pri = 1;
+b_gamma_pri = 1;
+a_tau_pri = 1;
+b_tau_pri = 1;
+a_alpha_pri = 1;
+b_alpha_pri = 1;
+iters = 1e4;
+burn_pct = 0.5
+```
+
+## Check Low Rank Penalty Matrix
+
+```{r}
+#| label: low rank penalty construction
+
+# Steps to create total basis penalty matrix
+num_pen_blocks_basis <- length(pen_basis)
+num_penals_basis <- num_pen_blocks_basis - as.numeric(basis_has_unpenalized)
+
+# non-zero columns in each penalty matrix
+pen_block_cols_basis <- map(pen_basis, ~which(apply(., 2, sum) != 0))
+
+# number of parameters for each penalty
+pen_block_dims_basis <- map_dbl(pen_block_cols_basis, length)
+  
+lambda_basis <- rep_len(lambda_basis0, num_penals_basis)
+
+lambda_basis_mult <- if(basis_has_unpenalized){
+      c(1, lambda_basis)
+} else { lambda_basis }
+
+pen_basis_lambda <- map2(lambda_basis_mult, pen_basis, ~ .x * .y)
+
+pen_basis_total <- Reduce("+", pen_basis_lambda)
+
+# Steps to create total demographics penalty matrix
+num_pen_blocks_demo <- length(pen_demo)
+num_penals_demo <- num_pen_blocks_demo - as.numeric(demo_has_unpenalized)
+  
+lambda_demo <- rep_len(lambda_demo0, num_penals_demo)
+
+lambda_demo_mult <- if(demo_has_unpenalized){
+  c(1, lambda_demo)
+} else { lambda_demo }
+
+pen_demo_lambda <- map2(lambda_demo_mult, pen_demo, ~ .x * .y)
+
+pen_demo_total <- Reduce("+", pen_demo_lambda)
+
+# Calculation of demographics cross product
+demo_sq <- crossprod(demo_mx)
+
+# First matrix in the posterior variance
+pen_basis_kron_demo_sq <- kronecker(pen_basis_total, demo_sq)
+
+# Full posterior precision
+penalties_kron <- pen_basis_kron_demo_sq +
+      (sigmasq / tausq) * kronecker(Diagonal(K), pen_demo_total)
+  
+```
+
+```{r}
+#| label: low rank penalty demonstration
+
+# Determine dimension of posterior precision
+post_prec_dim <- dim(penalties_kron)
+
+# Rank of posterior precision
+post_prec_rank <- qr2rankMatrix(qr(penalties_kron))
+
+cat("Posterior Precision: Dimension - Variance =", 
+    post_prec_dim[2] - post_prec_rank)
+
+# Data piece of precision
+post_data_dim <- dim(pen_basis_kron_demo_sq)
+
+post_data_rank <- qr2rankMatrix(qr(pen_basis_kron_demo_sq))
+
+cat("Posterior Data Kronecker: Dimension - Variance =", 
+    post_data_dim[2] - post_data_rank)
+```
+
+```{r}
+#| label: low rank penalty blocks
+
+# Calculate dimensions
+N <- nrow(outcome_mx)
+M <- ncol(outcome_mx)
+K <- ncol(basis_mx)
+Q <- ncol(demo_mx)
+
+# Check 2 diagonal blocks of full matrix
+
+index <- 0
+
+diag_block_df <- tibble(block_num = rep(NA, num_penals_basis), 
+                        block = rep(NA, num_penals_basis),
+                        dim = rep(NA, num_penals_basis), 
+                        rank = rep(NA, num_penals_basis))
+
+for(j in 1:num_penals_basis){
+  
+  first_index <- index + 1
+  
+  index <- index + pen_block_dims_basis[j] * Q
+  
+  block_j <- pen_basis_kron_demo_sq[first_index:index, first_index:index]
+  
+  row_j <- tibble_row(
+    block_num <- j,
+    block = list(block_j),
+    dim = min(dim(block_j)),
+    rank = qr2rankMatrix(qr(block_j))
+  )
+  
+  diag_block_df[j,] <- row_j
+  
+}
+
+diag_block_df %<>% mutate(diff = dim - rank)
+
+kbl(diag_block_df %>% select(-block)) %>% 
+  kable_classic(full_width = F)
+
+# Check segment corresponding to cyclic spline
+
+cyclic_kron_demo <- diag_block_df$block[[1]] + 
+  kronecker(Diagonal(pen_block_dims_basis[1]), pen_demo_total)
+
+cyclic_kron_dim <- dim(cyclic_kron_demo)
+
+cyclic_kron_rank <- qr2rankMatrix(qr(cyclic_kron_demo))
+
+
+cat("Posterior Data Cyclic Plus Demo: Dimension - Variance =", 
+    cyclic_kron_dim[2] - cyclic_kron_rank)
+```
+

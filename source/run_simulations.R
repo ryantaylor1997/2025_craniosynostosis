@@ -3,22 +3,64 @@
 ### PURPOSE: Run Simulations for Hierarchical Bayes Model
 ################################################################################
 
+rm(list = ls()); gc()
+
+# Initialize --------------------------------------------------------------
+
+# Load functions for design matrix and simulations
+source(here::here("source", "construct_smooth_ref_code_fns.R"))
+source(here::here("source", "simulate_data_fn.R"))
+source(here::here("source", "mv_normal_matrix_fn.R"))
+
+## Load soap film object for basis functions
+load(file = here::here("analysis", "intermediate", "soap_object.rda"))
+
+### Set parameters
+
+## Parameters for generating demographic data
+# Number of patients to use
+n_pats <- 80
+
+# Max age of these patients
+age_max <- 365
+
+# Proportion of sex = 1
+prop_sex <- 0.5
+
+# Knots to use for each age expansion
+demo_age_knots <- 10
+
+# Scalar parameters for outcome data simulation
+sigma2_test <- 2
+
+tau2_test <- 3
+
+lambda_basis_vec <- c(0.001, 0.01)
+
+lambda_demo <- 0.005
 
 # Take subset of data for demographics ------------------------------------
 
-# Identify patients of each fusion type
+# Generate a set of patients of a few fusion types
+
+# Set random seed
 set.seed(978)
 
-cranio_demo_test_df <- cranio_sub %>%
-  filter(!fname %in% cranio_dup_fnames) %>%
-  group_by(fusion_type) %>%
-  slice_sample(n = 10)
+cranio_demo_test_df <- tibble(
+  sex = rbinom(n_pats, 1, prop_sex),
+  age = runif(n_pats, max = age_max),
+  fusion_type = c(rep("Normative", n_pats / 2),
+                  rep("Fusion_1", n_pats / 4),
+                  rep("Fusion_2", n_pats / 4))
+) %>%
+  mutate(fusion_type = factor(fusion_type,
+                              levels = c("Normative", "Fusion_1", "Fusion_2")))
 
 
 # Convert demographic data to model matrix --------------------------------
 
 cranio_demo_smooth_test <- smooth.construct2(
-  s(age, bs = "cr", k = cranio_knots_age),
+  s(age, bs = "cr", k = demo_age_knots),
   data = cranio_demo_test_df, knots = NULL
 )
 
@@ -37,18 +79,9 @@ demo_penalty_list_test <- list(demo_ingredients_test$S[[1]],
 
 # Simulate corresponding data ---------------------------------------------
 
-### Set scalar parameters
-sigma2_test <- 2
-
-tau2_test <- 3
-
-lambda_basis_vec <- c(0.001, 0.01)
-
-lambda_demo <- 0.005
-
 ### Generate simulated data from these assumptions
 sim_data_soap <- make_sim_data_bayes_soap(
-  basis_mx = so_X,
+  basis_mx = cranio_soap$X,
   demo_mx = demo_ingredients_test$X,
   penalty_basis_list = cranio_soap$S,
   penalty_demo_list = demo_penalty_list_test,
@@ -63,7 +96,7 @@ sim_data_soap <- make_sim_data_bayes_soap(
 
 # Set initial parameters
 outcome_mx = sim_data_soap$outcome;
-basis_mx = so_X;
+basis_mx = cranio_soap$X;
 demo_mx = demo_ingredients_test$X;
 pen_basis = cranio_soap$S;
 pen_demo = demo_penalty_list_test;
