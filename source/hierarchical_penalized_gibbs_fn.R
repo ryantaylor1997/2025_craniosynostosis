@@ -255,8 +255,10 @@ hierarchical_penalized_gibbs <- function(
     ## Compute matrices based on penalty matrices that we use in multiple places
     pen_basis_kron_demo_sq <- kronecker(pen_basis_total, demo_sq)
 
+    pen_demo_kron <- kronecker(Diagonal(K), pen_demo_total)
+
     penalties_kron <- pen_basis_kron_demo_sq +
-      (sigmasq / tausq) * kronecker(Diagonal(K), pen_demo_total)
+      (sigmasq / tausq) * pen_demo_kron
 
     pen_basis_kron_demo_t <- kronecker(pen_basis_total, t(demo_mx))
 
@@ -295,9 +297,11 @@ hierarchical_penalized_gibbs <- function(
       crossprod(gamma, basis_t_kron) %*% outcome_vec -
       crossprod(beta, pen_basis_kron_demo_t) %*% gamma
 
+    b_sigma_post <- b_sigma_post[1,1]
+
     # Generate new sigma squared sample
-    precision_data <- rgamma(1, a_sigma_post, b_sigma_post)
-    sigmasq <- 1 / precision_basis
+    precision_data <- rgamma(1, a_sigma_post, rate = b_sigma_post)
+    sigmasq <- 1 / precision_data
 
     timer["sigma2_update"] <- timer["sigma2_update"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -309,8 +313,10 @@ hierarchical_penalized_gibbs <- function(
     b_tau_post <- b_tau_pri +
       0.5 * crossprod(beta, kronecker(Diagonal(K), pen_demo_total) ) %*% beta
 
+    b_tau_post <- b_tau_post[1,1]
+
     # Draw new tau squared sample
-    precision_param <- rgamma(1, a_tau_post, b_tau_post)
+    precision_param <- rgamma(1, a_tau_post, rate = b_tau_post)
     tausq <- 1 / precision_param
 
     timer["tau2_update"] <- timer["tau2_update"] +
@@ -355,7 +361,7 @@ hierarchical_penalized_gibbs <- function(
     lambda_basis <- map2_dbl(
       a_gamma_post, b_gamma_post,
       function(a_new, b_new){
-        rgamma(1, a_new, b_new)
+        rgamma(1, a_new, rate = b_new)
       })
 
     timer["lambdas_basis_update"] <- timer["lambdas_basis_update"] +
@@ -392,7 +398,7 @@ hierarchical_penalized_gibbs <- function(
     lambda_demo <- map2_dbl(
       a_alpha_post, b_alpha_post,
       function(a_new, b_new){
-        rgamma(1, a_new, b_new)
+        rgamma(1, a_new, rate = b_new)
       })
 
     timer["lambdas_demo_update"] <- timer["lambdas_demo_update"] +

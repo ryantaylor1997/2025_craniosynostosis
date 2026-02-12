@@ -287,19 +287,38 @@ Next, we use these simulated demographics to generate the demographic model matr
 demo_age_knots <- 10
 ```
 
-We use a cubic regression spline with `r demo_age_knots` basis functions for the nonlinear function of age. To construct the basis expansion, we use the `mgcv::smooth.construct2` function. We denote these functions as $h^*_1(Age), \ldots, h^*_{L+1}(Age)$.
+We use a cubic regression spline *with shrinkage* with `r demo_age_knots` basis functions for the nonlinear function of age. To construct the basis expansion, we use the `mgcv::smooth.construct2` function. We denote these functions as $h^*_1(Age), \ldots, h^*_{L+1}(Age)$.
 
 ```{r}
 #| label: demographic-basis-expansion
 
+# Specify smooth object
+demo_smooth_obj <- s(age, bs = "cr", k = demo_age_knots)
+
+demo_smooth_noshrink <- smooth.construct2(
+  demo_smooth_obj, data = demo_test_df, knots = NULL
+)
+
+# Specify multiple of last eigenvalue to multiply by
+shrink_eigen_mult <- 1e-5
+attr(demo_smooth_obj, "shrink") <- shrink_eigen_mult
+
 # Construct basis expansion and penalty matrix
 demo_smooth_test <- smooth.construct2(
-  s(age, bs = "cr", k = demo_age_knots),
-  data = demo_test_df, knots = NULL
+  demo_smooth_obj, data = demo_test_df, knots = NULL
 )
+
+# Adjust penalty matrix for underflow
+scale_demo_penalty <- norm(cranio_soap$S[[1]], type = "O") / 
+  norm(demo_smooth_test$S[[1]], type = "O")
+
+cat("Scaling age effect penalty matrix by", format(scale_demo_penalty, nsmall = 2))
+
+demo_smooth_test$S[[1]] <- demo_smooth_test$S[[1]] * scale_demo_penalty
+demo_smooth_noshrink$S[[1]] <- demo_smooth_noshrink$S[[1]] * scale_demo_penalty
 ```
 
-Because of the skewed distribution of ages in our data, these basis functions and their associated penalty matrix $\mathbf{P}_\alpha$ take the following form:
+These basis functions and their associated penalty matrix $\mathbf{P}_\alpha$ take the following form:
 
 ```{r}
 #| label: demo-expansion-viz
@@ -329,14 +348,34 @@ demo_basis_plot
 demo_expansion_s_plot <- demo_smooth_test$S[[1]] %>% 
   reshape2::melt() %>% 
   rename(row = Var1, col = Var2) %>% 
+  mutate(type = "shrink") %>% 
+  bind_rows(
+    demo_smooth_noshrink$S[[1]] %>% 
+      reshape2::melt() %>% 
+      rename(row = Var1, col = Var2) %>% 
+      mutate(type = "no shrink")
+  ) %>% 
   ggplot(aes(x = col, y = -row, fill = value)) +
   geom_tile() +
   scale_fill_gradient2() +
   scale_x_continuous(breaks = scales::breaks_width(1)) +
   scale_y_continuous(breaks = scales::breaks_width(1)) +
+  facet_wrap(~type) +
   labs(title = "Demographics Penalty Matrix")
 
 demo_expansion_s_plot
+
+demo_s_diff_plot <- (demo_smooth_test$S[[1]] - demo_smooth_noshrink$S[[1]]) %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, col = Var2) %>% 
+  ggplot(aes(x = col, y = -row, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2() +
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  scale_y_continuous(breaks = scales::breaks_width(1)) +
+  labs(title = "Demographics Penalty Shrinkage Difference")
+
+demo_s_diff_plot
 ```
 
 For our model assumptions, we assume that these basis functions are added as covariates in an additive model that already contains an intercept. Therefore, we will have identifiability constraints if we keep all $L+1$ basis functions describing age. To address this issue, we center each of the basis functions and remove the last one. Likewise, we remove the last row and column of the penalty matrix from this smooth.
@@ -764,9 +803,10 @@ demo_sq <- crossprod(demo_mx)
 # First matrix in the posterior variance
 pen_basis_kron_demo_sq <- kronecker(pen_basis_total, demo_sq)
 
+pen_demo_kron <- kronecker(Diagonal(K), pen_demo_total)
+
 # Full posterior precision
-penalties_kron <- pen_basis_kron_demo_sq +
-      (sigmasq / tausq) * kronecker(Diagonal(K), pen_demo_total)
+penalties_kron <- pen_basis_kron_demo_sq + (sigmasq / tausq) * pen_demo_kron
   
 ```
 
@@ -779,15 +819,19 @@ post_prec_dim <- dim(penalties_kron)
 # Rank of posterior precision
 post_prec_rank <- qr2rankMatrix(qr(penalties_kron))
 
-cat("Posterior Precision: Dimension - Variance =", 
-    post_prec_dim[2] - post_prec_rank)
+cat("Posterior Precision: Dimension - QR Rank =", 
+    post_prec_dim[2] - post_prec_rank, "\n")
+
+cat("Is Invertible:", 
+    rcond(penalties_kron) >= .Machine$double.eps,
+    "with rcond =", rcond(penalties_kron), "\n")
 
 # Data piece of precision
 post_data_dim <- dim(pen_basis_kron_demo_sq)
 
 post_data_rank <- qr2rankMatrix(qr(pen_basis_kron_demo_sq))
 
-cat("Posterior Data Kronecker: Dimension - Variance =", 
+cat("Posterior Data Kronecker: Dimension - QR Rank =", 
     post_data_dim[2] - post_data_rank)
 ```
 
@@ -843,7 +887,7 @@ cyclic_kron_dim <- dim(cyclic_kron_demo)
 cyclic_kron_rank <- qr2rankMatrix(qr(cyclic_kron_demo))
 
 
-cat("Posterior Data Cyclic Plus Demo: Dimension - Variance =", 
+cat("Posterior Data Cyclic Plus Demo: Dimension - QR Rank =", 
     cyclic_kron_dim[2] - cyclic_kron_rank)
 ```
 
