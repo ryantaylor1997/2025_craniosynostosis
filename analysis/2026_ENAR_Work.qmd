@@ -1,0 +1,500 @@
+---
+title: "Malformation Analysis"
+author: "Ryan Taylor"
+format: 
+  html:
+    embed-resources: true
+    theme: paper
+    highlight: haddock
+    code-fold: true
+    toc: true
+    toc-location: left
+    code-overflow: wrap
+    df-print: kable
+    knitr:
+      opts_chunk:
+        echo: true
+        include: true
+        message: false
+        warning: false
+        results: markup
+        fig.align: center
+        fig.height: 5
+        fig.width: 7
+        fig.path: "../results/2026 ENAR Figures/"
+        R.options:
+          scipen: 999
+          knitr.kable.NA: ""
+number-sections: true
+editor: source
+---
+
+::: {.hidden}
+$$
+\usepackage{xcolor}
+
+\newcommand{\bX}{\mathbf X}
+\newcommand{\bY}{\mathbf Y}
+\newcommand{\by}{\mathbf y}
+\newcommand{\bH}{\mathbf H}
+\newcommand{\bh}{\mathbf h}
+\newcommand{\bx}{\mathbf x}
+\newcommand{\bG}{\mathbf G}
+\newcommand{\bg}{\mathbf g}
+\newcommand{\bS}{\mathbf S}
+\newcommand{\bs}{\mathbf s}
+\newcommand{\bP}{\mathbf P}
+\newcommand{\bC}{\mathbf C}
+\newcommand{\bI}{\mathbf I}
+\newcommand{\hatbG}{\widehat \bG}
+\newcommand{\ba}{\mathbf a}
+\newcommand{\bz}{\mathbf z}
+\newcommand{\bb}{\mathbf b}
+\newcommand{\bB}{\mathbf B}
+\newcommand{\bw}{\mathbf w}
+\newcommand{\bW}{\mathbf W}
+\newcommand{\bZ}{\mathbf Z}
+\newcommand{\bV}{\mathbf V}
+\newcommand{\bU}{\mathbf U}
+
+\newcommand{\balpha}{\boldsymbol{\alpha}}
+\newcommand{\bbeta}{\boldsymbol{\beta}}
+\newcommand{\bgamma}{\boldsymbol{\gamma}}
+\newcommand{\bepsilon}{\boldsymbol{\epsilon}}
+\newcommand{\bphi}{\boldsymbol{\phi}}
+\newcommand{\hatbbeta}{\hat{\bbeta}}
+\newcommand{\hatbgamma}{\hat{\bgamma}}
+\newcommand{\bSigma}{\boldsymbol{\Sigma}}
+\newcommand{\bsigma}{\boldsymbol{\sigma}}
+\newcommand{\hatVar}{\widehat{\Var}}
+\newcommand{\hatCov}{\widehat{\Cov}}
+\newcommand{\bLambda}{\boldsymbol{\Lambda}}
+\newcommand{\hatbLambda}{\hat{\bLambda}}
+\newcommand{\blambda}{\boldsymbol{\lambda}}
+\newcommand{\hatblambda}{\hat{\blambda}}
+\newcommand{\btheta}{\boldsymbol{\theta}}
+\newcommand{\hatbSigma}{\widehat{\boldsymbol{\Sigma}}}
+\newcommand{\bmu}{\boldsymbol{\mu}}
+\newcommand{\bzeta}{\boldsymbol{\zeta}}
+\newcommand{\bomega}{\boldsymbol{\omega}}
+\newcommand{\bOmega}{\boldsymbol{\Omega}}
+
+\newcommand{\diag}{\mathrm{diag}}
+\newcommand{\tr}{\mathrm{tr}}
+
+\newcommand{\bzero}{\boldsymbol{0}}
+\newcommand{\bone}{\boldsymbol{1}}
+\def\iid{\,{\buildrel iid \over \sim}\,} 
+\newcommand{\reals}{\mathbb{R}}
+$$
+:::
+
+```{r}
+#| label: setup
+#| include: false
+
+# Clear memory
+rm(list = ls()); gc(verbose = F)
+
+# Load packages
+# if(!require("pacman")) install.packages("pacman")
+pacman::p_load(
+  # Specialty
+  itsadug, spdep, concaveman,
+  
+  # Bayes
+  mvtnorm,
+  
+  # Format
+  latex2exp, table1, gtsummary,
+  broom.helpers, broom.mixed, colorspace,
+  
+  # Modeling
+  mgcv,
+  
+  # Useful extensions
+  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS,
+  
+  # Basics
+  DescTools, tidyverse, magrittr, janitor, glue, skimr,
+  knitr, kableExtra, ggpubr, ggpmisc, here
+)
+
+# Load my Rcpp functions
+library(DevCranio)
+
+# Load my R functions
+source(here("source", "load_matrix_data_fn.R"))
+source(here("source", "obtain_predictions_fn.R"))
+source(here("source", "lm_penalized_gibbs_fn.R"))
+source(here("source", "construct_smooth_ref_code_fns.R"))
+source(here("source", "hierarchical_penalized_gibbs_fn.R"))
+source(here("source", "simulate_data_fn.R"))
+source(here("source", "mv_normal_matrix_fn.R"))
+
+```
+
+# Load data
+
+```{r}
+#| label: data
+
+# Load image-level data
+cranio_sub <- readRDS(file = here::here("analysis", "intermediate",
+                                        "demographics_filtered.rds"))
+
+# Load dataset of matrices and demographics after filtering down
+cranio_matrix <- readRDS(file = here::here("analysis", "intermediate", 
+                                           "covars_and_matrices_sub.rds"))
+
+# Load region-level models
+region_models <- readRDS(
+    file = here::here("analysis", "intermediate",
+                      "prelim_models_region.rds"))
+
+# Load pixel-level model summaries
+load(file = here::here("analysis", "intermediate",
+                       "prelim_model_pixels_summ.rda"))
+
+# Load 2-D GAM tensor models
+fusion_models <- readRDS(
+    file = here::here("analysis", "intermediate", "prelim_models_fusion_te.rds"))
+
+# Load soap film object
+load(file = here::here("analysis", "intermediate", "soap_object.rda"))
+
+```
+
+# Introduction
+
+```{r}
+#| label: table1
+
+cranio_sub %<>%
+  mutate(sex = fct_recode(sex, "Female" = "0", "Male" = "1"))
+
+t1 <- tbl_summary(cranio_sub, 
+                  include = c(age, sex), 
+                  by = fusion_type,
+                  label = list(
+                    age ~ "Age (Days)",
+                    sex ~ "Sex"
+                  ),
+                  type = list(
+                    all_continuous() ~ "continuous2"),
+                  statistic = list(
+                    all_continuous() ~ c(
+                    "{median} ({p25}, {p75})",
+                    "{mean}"
+                  ))) %>% 
+  modify_header(all_stat_cols() ~ "**{level}**  \nN = {n} ({style_percent(p)}%)") %>% 
+  add_overall() %>% 
+  remove_footnote_header()
+
+t1_p <- t1 %>% 
+  as_kable_extra(booktabs = T, format = "latex")
+```
+
+```{r}
+#| label: normative shape
+
+# Create dataset of average cell for each fusion
+matrix_fusion <- cranio_matrix %>%
+  # Extract only fusion type and outcome from nested data
+  hoist(data, "fusion_type", "diff") %>%
+  select(-c(data, region)) %>%
+  unnest_longer(col = c(fusion_type, diff)) %>%
+  # Summarize average by pixel and fusion type
+  group_by(row, col, fusion_type) %>%
+  summarize(diff_avg = mean(diff)) %>%
+  ungroup()
+
+plot_fusion <- ggplot(matrix_fusion %>% 
+                        filter(fusion_type == "Normative")) +
+  geom_raster(aes(x = row, y = col, fill = diff_avg)) +
+  coord_fixed() +
+  theme_void() +
+  scale_fill_viridis_c(option = "turbo") +
+  labs(title = "Normative Average Growth",
+       fill = "Avg. Growth") +
+  theme(legend.position = "bottom")
+
+ggsave("../results/2026 ENAR Figures/fusion_norm_average.png",
+       plot_fusion,
+       height = 8, width = 5, units = "in")
+```
+
+
+```{r}
+#| label: fusion age
+
+# Set maximum age as 3 years old
+cranio_max_age <- 365 * 3
+
+# Set age categories
+age_breaks <- c(0, 61, 122, 183, 366, cranio_max_age)
+
+# Label these with spaces so they can wrap in plots
+age_break_labels <- map_chr(2:length(age_breaks),
+                            ~paste0(age_breaks[.-1],
+                                    " - ",
+                                    if_else(. == length(age_breaks), "", "<"),
+                                    age_breaks[.]))
+
+# Set consistent colors for every time fusions pop up
+fusion_color_dict <- distinct(cranio_sub, fusion_type) %>%
+  arrange(fusion_type) %>%
+  mutate(color = palette.colors(palette = "Set1")[1:6])
+
+# Summarize by age, region, and fusion type; have option to round to nearest month
+# Create dataset with fusion and age info
+matrix_age_fusion <- cranio_matrix %>%
+  hoist(data, "fusion_type", "age", "diff") %>%
+  select(-c(data, region)) %>%
+  unnest_longer(col = c(fusion_type, age, diff)) %>%
+  # Add age categories
+  mutate(age_bin = cut(age,
+                       breaks = age_breaks, labels = age_break_labels,
+                       right = FALSE, include.lowest = T)) %>%
+  # Summarize average in these bins
+  group_by(row, col, fusion_type, age_bin) %>%
+  summarize(diff_avg = mean(diff)) %>%
+  ungroup()
+
+# Plot brain map by fusion type and age
+plot_fusion_age <- ggplot(matrix_age_fusion) +
+  geom_raster(aes(x = row, y = col, fill = diff_avg)) +
+  facet_grid(fusion_type ~ age_bin,
+             labeller = label_wrap_gen(width = 10)) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(title = "Fusion - Age Average Growth",
+       fill = "Avg. Growth") +
+  theme(legend.position = "bottom")
+
+ggsave("../results/2026 ENAR Figures/fusion_age_average.png",
+       plot_fusion_age,
+       height = 8, width = 5, units = "in")
+```
+
+# Spatial Modeling
+
+```{r}
+#| label: 2d gam
+
+# Create polygon around pixels in cranium shape
+cranio_bound_shape <- cranio_matrix %>%
+  distinct(row, col) %>%
+  st_as_sf(coords = c("row", "col")) %>%
+  concaveman(concavity = 1)
+
+# Create boundary as points
+cranio_bound_matrix <- cranio_bound_shape %>%
+  # Add buffer so boundary is beyond data
+  st_buffer(1) %>%
+  # Convert to line
+  st_boundary() %>%
+  # Take points along this line at density = 1 unit
+  st_line_sample(density = 1) %>%
+  st_coordinates() %>%
+  as_tibble() %>%
+  rename(row = X, col = Y) %>%
+  # Add order of appearance in data
+  mutate(appearance_order = 1:n())
+
+# Set new data for GAM
+newdata_fusiongam <- tibble(
+  fused_Sagittal = 0,
+  fused_Metopic = 0,
+  fused_RCoronal = 0,
+  fused_LCoronal = 0,
+  sex = 0,
+  age = 365,
+  row = list(seq(from = (min(cranio_bound_matrix$row) - 30),
+                 to = (max(cranio_bound_matrix$row) + 30),
+                 length.out = 50)),
+  col = list(seq(from = (min(cranio_bound_matrix$col) - 30),
+                 to = (max(cranio_bound_matrix$col) + 30),
+                 length.out = 50))
+) %>%
+  unnest_longer(row) %>% unnest_longer(col)
+
+fusion_models  %<>%
+  # Predict from this model for spatial pattern (1 year old male)
+  mutate(pred_data = map(
+    model,
+    ~obtain_predictions(.x, newdata = newdata_fusiongam)))
+
+# Summarize 2-D model predictions
+fusion_model_summ <- fusion_models %>%
+  select(fusion_type, pred_data) %>%
+  unnest(pred_data)
+
+# Plot these predictions (in a rectangle shape with brain mask)
+plot_model_fusion <- ggplot() +
+  geom_raster(data = fusion_model_summ,
+              aes(x = row, y = col, fill = fit)) +
+  geom_sf(data = cranio_bound_shape, fill = NA, linewidth = 1) +
+  facet_wrap(~fusion_type, nrow = 2) +
+  scale_fill_viridis_c(option = "turbo") +
+  scale_alpha(range = c(0.5, 1), guide = "none") +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "Pred. Growth\n(1 y.o. F)") +
+  theme(legend.position = "bottom")
+
+plot_model_fusion
+
+ggsave("../results/2026 ENAR Figures/fusion_tensors.png",
+       plot_model_fusion,
+       height = 5, width = 6, units = "in")
+```
+
+```{r}
+#| label: plot basis functions
+
+so_GRID_N <- 10
+
+# Identify row knot points
+grid_row <- seq(min(cranio_bound_matrix$row), max(cranio_bound_matrix$row),
+                length.out = so_GRID_N)
+
+# Identify column knot points
+grid_col <- seq(min(cranio_bound_matrix$col), max(cranio_bound_matrix$col),
+                length.out = so_GRID_N)
+
+# Expand to grid of knots
+grid_all <- expand.grid("row" = grid_row, "col" = grid_col)
+
+# Crop to cranial boundary
+so_grid_k <- grid_all %>%
+  st_as_sf(coords = c("row", "col")) %>%
+  st_filter(cranio_bound_shape) %>%
+  st_coordinates() %>%
+  as_tibble() %>%
+  rename(row = X, col = Y)
+
+# Keep only points that we need to build smoother
+so_matrix_pts <- cranio_matrix %>%
+  select(row, col)
+
+# Add in distances determined in smoother object
+bound_points <- cranio_bound_matrix %>%
+  mutate(bound_r = cranio_soap$sd$bnd[[1]]$d[-1]) %>%
+  st_as_sf(coords = c("row", "col"), remove = F)
+
+# Convert points within matrix to sf for nearest neighbor
+matrix_sf <- so_matrix_pts %>% st_as_sf(coords = c("row", "col"), remove = F)
+
+# Identify nearest matrix neighbor to each boundary point
+bound_points %<>%
+  mutate(nearest_cell = st_nearest_feature(bound_points, matrix_sf)) %>%
+  st_drop_geometry() %>%
+  select(nearest_cell, bound_r)
+
+# Match matrix points to their order on the boundary
+matrix_pts_df <- so_matrix_pts %>%
+  mutate(cell_id = 1:n()) %>%
+  left_join(bound_points,
+            by = c("cell_id" = "nearest_cell")) %>%
+  # When we get multiple matches, take first point on boundary
+  arrange(cell_id, bound_r) %>%
+  group_by(cell_id) %>%
+  slice(1) %>%
+  ungroup() %>%
+  select(-cell_id)
+
+# Identify different parts of penalty matrix
+cols_bound <- which(apply(cranio_soap$S[[1]], 2, function(x) sum(x != 0)) != 0)
+cols_film <- which(apply(cranio_soap$S[[2]], 2, function(x) sum(x != 0)) != 0)
+
+# Create data of basis functions and pixel locations for plotting
+basis_df <- cranio_soap$X %>%
+  data.frame() %>%
+  bind_cols(matrix_pts_df) %>%
+  pivot_longer(-c(row, col, bound_r),
+               names_to = "basis_fn") %>%
+  mutate(basis_fn = as.numeric(str_remove(basis_fn, "X")),
+         fn_cat = case_when(basis_fn %in% cols_bound ~ "Boundary",
+                            basis_fn %in% cols_film ~ "Interior"))
+
+# Link knots to interior basis functions
+so_grid_k %<>% mutate(basis_fn = cols_film)
+
+# Plot boundary cyclic 1-dimensional splines
+soap_basis_cyclic <- ggplot(data = basis_df %>%
+                              filter(!is.na(bound_r) & fn_cat == "Boundary")) +
+  geom_line(aes(x = bound_r, y = value, color = factor(basis_fn))) +
+  scale_color_brewer(palette = "Paired") +
+  labs(x = "Distance Along Boundary",
+       y = "Function Value",
+       color = "Basis Fn.",
+       title = "Boundary Cyclic Basis Functions") +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  guides(color = guide_legend(nrow = 1, byrow = T))
+
+ggsave("../results/2026 ENAR Figures/basis_cyclic.png",
+       soap_basis_cyclic,
+       height = 2, width = 6, units = "in")
+
+# Plot boundary-induced 2-dimensional basis functions
+soap_basis_bd <- ggplot() +
+  geom_raster(data = basis_df %>% filter(fn_cat == "Boundary"),
+              aes(x = row, y = col, fill = value)) +
+  scale_fill_viridis_c() +
+  labs(x = NULL, y = NULL, fill = "Fn. Value",
+       title = "Boundary Basis Functions") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~basis_fn, ncol = 2)
+
+ggsave("../results/2026 ENAR Figures/basis_boundary.png",
+       soap_basis_bd,
+       height = 6, width = 3, units = "in")
+
+# Plot interior basis functions with corresponding knots
+soap_basis_int <- ggplot() +
+  geom_raster(data = basis_df %>% filter(basis_fn %in% c(10, 39, 69)),
+              aes(x = row, y = col, fill = value)) +
+  geom_point(data = so_grid_k %>% select(-basis_fn),
+             aes(x = row, y = col),
+             color ="black", size = 0.01) +
+  geom_point(data = so_grid_k %>% filter(basis_fn %in% c(10, 39, 69)),
+             aes(x = row, y = col),
+             color ="red", size = 0.01) +
+  scale_fill_viridis_c() +
+  labs(x = NULL, y = NULL, fill = "Fn. Value",
+       title = "Interior Basis Functions") +
+  coord_fixed() +
+  theme_void() +
+  theme(legend.position = "bottom") +
+  facet_wrap(~basis_fn, ncol = 1)
+
+ggsave("../results/2026 ENAR Figures/basis_interior.png",
+       soap_basis_int,
+       height = 6, width = 6, units = "in")
+```
+
+# Demographic Modeling
+
+```{r}
+#| label: age effect
+
+# Plot 1 age smoothed effect per region
+plot_pixel_pred <- ggplot(model_pixel_smooth,
+                          aes(x = age, y = fit)) +
+  geom_line(aes(group = interaction(row, col)),
+            color = "blue", alpha = 0.05, linewidth = 0.05) +
+  geom_smooth(color = "red") +
+  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Female)") +
+  theme_minimal()
+
+
+```
+

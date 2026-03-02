@@ -19,7 +19,7 @@ hierarchical_penalized_gibbs <- function(
     gamma0, beta0, sigmasq0, tausq0, lambda_basis0, lambda_demo0, # Default parameters
     a_sigma_pri, b_sigma_pri, a_gamma_pri, b_gamma_pri,
     a_tau_pri, b_tau_pri, a_alpha_pri, b_alpha_pri, # Default hyperparameters
-    iters = 1e4, burn_pct = 0.1 # MCMC parameters
+    iters = 1e4, burn_pct = 0.1, update_pct = burn_pct # MCMC parameters
 ){
 
   ### Set up time tracking
@@ -71,8 +71,12 @@ hierarchical_penalized_gibbs <- function(
   num_penals_demo <- num_pen_blocks_demo - as.numeric(demo_has_unpenalized)
 
   # non-zero columns in each penalty matrix
-  pen_block_cols_basis <- map(pen_basis, ~which(apply(., 2, sum) != 0))
-  pen_block_cols_demo <- map(pen_demo, ~which(apply(., 2, sum) != 0))
+  pen_block_cols_basis <- map(pen_basis, ~which(
+    apply(., 2,
+          function(x){ sum(x != 0)}) != 0))
+  pen_block_cols_demo <- map(pen_demo, ~which(
+    apply(., 2,
+          function(x){ sum(x != 0)}) != 0))
 
   # number of parameters for each penalty
   pen_block_dims_basis <- map_dbl(pen_block_cols_basis, length)
@@ -101,15 +105,23 @@ hierarchical_penalized_gibbs <- function(
 
   ### Initialize hyperparameters
 
-  # Assign initial values
+  ## Assign initial values
+
+  # Coefficients
   gamma <- rep_len(gamma0, N*K)
   beta <- rep_len(beta0, Q*K)
 
+  # Data and soap film parameters
   sigmasq <- sigmasq0
   lambda_basis <- rep_len(lambda_basis0, num_penals_basis)
+  a_gamma_pri <- rep_len(a_gamma_pri, num_penals_basis)
+  b_gamma_pri <- rep_len(b_gamma_pri, num_penals_basis)
 
+  # Demographic effect parameters
   tausq <- tausq0
   lambda_demo <- rep_len(lambda_demo0, num_penals_demo)
+  a_alpha_pri <- rep_len(a_alpha_pri, num_penals_demo)
+  b_alpha_pri <- rep_len(b_alpha_pri, num_penals_demo)
 
   # Initialize gamma and beta moments before update
   gamma_expect <- gamma
@@ -187,7 +199,11 @@ hierarchical_penalized_gibbs <- function(
   for(iter in 1:iters){
 
     # Output on checkpoints
-    if(iter %% iters_burn == 0) cat("at turn", iter, "\n")
+    if((iter / iters) %% update_pct == 0){
+      cat("at turn", iter, "after",
+          difftime(Sys.time(), time_pts[["start"]], units = "secs"),
+          "seconds \n")
+    }
 
     ### Compile "Total" penalty matrices (including lambdas)
 
@@ -244,6 +260,9 @@ hierarchical_penalized_gibbs <- function(
     # Use custom function to perform Cholesky decomposition on sparse Matrix
     gamma <- t(rmvnorm_Matrix(n = 1, gamma_expect, gamma_var))
 
+    ### *** DRAFT *** : Set Gammas to fixed value
+    gamma <- Matrix(as(gamma_true, "sparseVector"), N*K, 1)
+
     gamma_mx <- Matrix(as(gamma, "sparseVector"), N, K, byrow = F)
 
     timer["gamma_draw"] <- timer["gamma_draw"] +
@@ -260,26 +279,30 @@ hierarchical_penalized_gibbs <- function(
     penalties_kron <- pen_basis_kron_demo_sq +
       (sigmasq / tausq) * pen_demo_kron
 
-    pen_basis_kron_demo_t <- kronecker(pen_basis_total, t(demo_mx))
-
     # Take inverse that comprises most of the variance
     # -> tol = 0 avoids testing for whether it is near-singular
     penalties_kron_inv <- solve(penalties_kron)
 
+    pen_basis_kron_demo_t <- kronecker(pen_basis_total, t(demo_mx))
+
     ## Compute expectation and variance
     beta_expect <- penalties_kron_inv %*%
-      pen_basis_kron_demo_t %*% gamma
+      pen_basis_kron_demo_t %*%
+      gamma
 
     beta_var <- sigmasq * penalties_kron_inv
 
-    timer["beta_update"] <- timer["beta_update_c"] +
+    timer["beta_update"] <- timer["beta_update"] +
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
 
     ## Generate new beta sample
     beta <- t(rmvnorm_Matrix(n = 1, beta_expect, beta_var))
 
-    beta_mx <- matrix(beta, Q, K, byrow = F)
+    # ### *** DRAFT *** : Set Betas to fixed value
+    # beta <- Matrix(as(demo_effect_mx, "sparseVector"), Q*K, 1)
+
+    beta_mx <- Matrix(as(beta, "sparseVector"), Q, K, byrow = F)
 
     timer["beta_draw"] <- timer["beta_draw"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -303,6 +326,9 @@ hierarchical_penalized_gibbs <- function(
     precision_data <- rgamma(1, a_sigma_post, rate = b_sigma_post)
     sigmasq <- 1 / precision_data
 
+    ### *** DRAFT *** : Set sigma squared to initial value
+    sigmasq <- sigmasq_true
+
     timer["sigma2_update"] <- timer["sigma2_update"] +
       difftime(Sys.time(), time_check, units = "secs")
     time_check <- Sys.time()
@@ -318,6 +344,9 @@ hierarchical_penalized_gibbs <- function(
     # Draw new tau squared sample
     precision_param <- rgamma(1, a_tau_post, rate = b_tau_post)
     tausq <- 1 / precision_param
+
+    ### *** DRAFT *** : Set tau squared to initial value
+    tausq <- tausq_true
 
     timer["tau2_update"] <- timer["tau2_update"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -345,16 +374,16 @@ hierarchical_penalized_gibbs <- function(
         dim(beta_block) <- c(prod(dim(beta_block)), 1)
 
         # Isolate demographic Kronecker product the size of the block
-        demo_kron_block <- demo_kron[1:N*pen_block_dim, 1:Q*pen_block_dim]
+        demo_kron_block <- kronecker(Diagonal(pen_block_dim), demo_mx)
 
         # Subtract chunk of demographic effects from chunk of gammas
         block_vec <- gamma_block - demo_kron_block %*% beta_block
 
         b_post <- b_pri +
         (1 / (2 * sigmasq)) *
-          crossprod(block_vec, kronecker(pen_block, Diagonal(N)) ) %*% block_vec
+          crossprod(block_vec, kronecker(pen_block, Diagonal(N))) %*% block_vec
 
-        return(b_post)
+        return(b_post[1,1])
       })
 
     # Draw new basis lambdas
@@ -363,6 +392,9 @@ hierarchical_penalized_gibbs <- function(
       function(a_new, b_new){
         rgamma(1, a_new, rate = b_new)
       })
+
+    ### *** DRAFT *** : Set basis lambdas to fixed value
+    lambda_basis <- lambda_basis_fix
 
     timer["lambdas_basis_update"] <- timer["lambdas_basis_update"] +
       difftime(Sys.time(), time_check, units = "mins")
@@ -389,9 +421,11 @@ hierarchical_penalized_gibbs <- function(
 
         b_post <- b_pri +
           (1 / (2 * tausq)) *
-          crossprod(beta_block_t, kronecker(pen_block, Diagonal(K)) ) %*% beta_block_t
+          crossprod(beta_block_t,
+                    kronecker(pen_block, Diagonal(K))) %*%
+          beta_block_t
 
-        return(b_post)
+        return(b_post[1,1])
       })
 
     # Draw new basis lambdas
@@ -401,6 +435,9 @@ hierarchical_penalized_gibbs <- function(
         rgamma(1, a_new, rate = b_new)
       })
 
+    ### *** DRAFT *** : Set basis lambdas to fixed value
+    lambda_demo <- lambdas_demo
+
     timer["lambdas_demo_update"] <- timer["lambdas_demo_update"] +
       difftime(Sys.time(), time_check, units = "mins")
     time_check <- Sys.time()
@@ -409,15 +446,15 @@ hierarchical_penalized_gibbs <- function(
     iter_post <- iter - iters_burn
 
     if(iter_post > 0){
-      gamma_out[, , iter_post] <- gamma_mx
-      beta_out[, , iter_post] <- beta_mx
+      gamma_out[, , iter_post] <- as.matrix(gamma_mx)
+      beta_out[, , iter_post] <- as.matrix(beta_mx)
       sigmasq_out[, iter_post] <- sigmasq
-      tausq_out[, iter_post]
+      tausq_out[, iter_post] <- tausq
       lambda_basis_out[, iter_post] <- lambda_basis
       lambda_demo_out[, iter_post] <- lambda_demo
     } else{
-      gamma_burn[, , iter] <- gamma_mx
-      beta_burn[, , iter] <- beta_mx
+      gamma_burn[, , iter] <- as.matrix(gamma_mx)
+      beta_burn[, , iter] <- as.matrix(beta_mx)
       sigmasq_burn[, iter] <- sigmasq
       tausq_burn[, iter] <- tausq
       lambda_basis_burn[, iter] <- lambda_basis

@@ -16,7 +16,7 @@ format:
       opts_chunk:
         echo: true,
         include: true
-        message: false,
+        message: false
         warning: false
         results: markup
         fig.align: center
@@ -40,13 +40,13 @@ pacman::p_load(
   
   # Format
   latex2exp, table1, gtsummary, ggridges, forestplot,
-  broom.helpers, broom.mixed, patchwork, colorRamps,
+  broom.helpers, broom.mixed, patchwork, colorRamps, pals,
   
   # Modeling
   mgcv,
   
   # Useful extensions
-  gtools, corrplot, MASS, car, Matrix, mvtnorm,
+  gtools, corrplot, MASS, car, Matrix, mvtnorm, reshape2,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
@@ -55,6 +55,10 @@ pacman::p_load(
 
 source(here::here("source", "construct_smooth_ref_code_fns.R"))
 source(here::here("source", "mv_normal_matrix_fn.R"))
+source(here::here("source", "hierarchical_penalized_gibbs_fn.R"))
+
+DO_GIBBS <- T
+LOAD_GIBBS_DATE <- "2026-02-17"
 ```
 
 # Overview
@@ -197,14 +201,15 @@ basis_s <- map(
   bind_rows()
 
 basis_s_plot <- basis_s %>% 
+  filter(value != 0) %>% 
   group_split(index) %>% 
   map(
     ~ggplot(., aes(x = col, y = -row, fill = value)) +
       geom_tile() +
       facet_wrap(~index, nrow = 1) +
       scale_fill_gradient2() +
-      scale_x_continuous(breaks = scales::breaks_width(10)) +
-      scale_y_continuous(breaks = scales::breaks_width(10)) +
+      scale_x_continuous(breaks = scales::breaks_extended(10)) +
+      scale_y_continuous(breaks = scales::breaks_extended(10)) +
       theme_minimal() +
       theme(legend.position = "bottom") +
       coord_fixed()
@@ -284,7 +289,7 @@ Next, we use these simulated demographics to generate the demographic model matr
 #| label: demographic-age-function-params
 
 # Set number of knots to use for each age expansion
-demo_age_knots <- 10
+demo_age_knots <- 14
 ```
 
 We use a cubic regression spline *with shrinkage* with `r demo_age_knots` basis functions for the nonlinear function of age. To construct the basis expansion, we use the `mgcv::smooth.construct2` function. We denote these functions as $h^*_1(Age), \ldots, h^*_{L+1}(Age)$.
@@ -293,7 +298,7 @@ We use a cubic regression spline *with shrinkage* with `r demo_age_knots` basis 
 #| label: demographic-basis-expansion
 
 # Specify smooth object
-demo_smooth_obj <- s(age, bs = "cr", k = demo_age_knots)
+demo_smooth_obj <- s(age, bs = "tp", k = demo_age_knots)
 
 demo_smooth_noshrink <- smooth.construct2(
   demo_smooth_obj, data = demo_test_df, knots = NULL
@@ -333,7 +338,7 @@ demo_expansion_df <- demo_smooth_test$X %>%
 
 demo_basis_plot <- ggplot(demo_expansion_df) +
   geom_line(aes(x = age, y = value, color = as.factor(fn))) +
-  scale_color_brewer(palette = "Paired") +
+  scale_color_manual(values = unname(pals::alphabet2())) +
   geom_point(inherit.aes = F,
              data = enframe(demo_smooth_test$xp),
              aes(x = value, y = 0),
@@ -357,7 +362,9 @@ demo_expansion_s_plot <- demo_smooth_test$S[[1]] %>%
   ) %>% 
   ggplot(aes(x = col, y = -row, fill = value)) +
   geom_tile() +
-  scale_fill_gradient2() +
+  scale_fill_gradient2(transform = "pseudo_log",
+                       breaks = c(-1 * c(10^c(0:log10(max(demo_smooth_test$S[[1]])), 1)),
+                                  c(10^c(0:log10(max(demo_smooth_test$S[[1]])), 1)))) +
   scale_x_continuous(breaks = scales::breaks_width(1)) +
   scale_y_continuous(breaks = scales::breaks_width(1)) +
   facet_wrap(~type) +
@@ -397,6 +404,30 @@ demo_ingredients_test <- setup_reference_model(
 # Combine suture fusion penalties so we estimate the same lambda
 demo_penalty_list_test <- list(demo_ingredients_test$S[[1]],
                                Reduce("+", demo_ingredients_test$S[-1]))
+
+## Also identify which parameter is in which category
+
+# Determine which penalty columns are non-zero
+demo_params_cols <- map(demo_ingredients_test$S,
+                        ~which(
+                          apply(., 2,
+                                function(x){ sum(x != 0)}) != 0))
+
+# Set number of non-penalized terms
+Q_u <- length(demo_params_cols[[1]])
+
+# Map each parameter to a penalty number and classify
+demo_params_dict <- tibble(
+  block_num = 1:length(demo_params_cols), 
+  param_num = demo_params_cols
+  ) %>% 
+  unnest(param_num) %>% 
+  mutate(effect_cat = case_match(block_num,
+                                 1 ~ "Theta",
+                                 2 ~ "Normative",
+                                 3 ~ "Fusion 1",
+                                 4 ~ "Fusion 2")) %>% 
+  select(-block_num)
 ```
 
 To illustrate the result, we summarize the average basis function values by basis function and by suture type. We also plot the values in the penalty matrices representing the two parametric covariates and the 27 penalized covariates. The first penalty matrix will not multiplied by a smoothing constant, and the second will be multiplied by $\lambda_\alpha$.
@@ -447,7 +478,9 @@ demo_s_plot <- demo_smooth_s %>%
     ~ggplot(., aes(x = col, y = -row, fill = value)) +
       geom_tile() +
       facet_wrap(~index, nrow = 1) +
-      scale_fill_gradient2() +
+      scale_fill_gradient2(transform = "pseudo_log",
+                       breaks = c(-1 * c(10^c(0:log10(max(demo_smooth_s$value)), 1)),
+                                  c(10^c(0:log10(max(demo_smooth_s$value)), 1)))) +
       scale_x_continuous(breaks = scales::breaks_width(2)) +
       scale_y_continuous(breaks = scales::breaks_width(2)) +
       theme_minimal() +
@@ -469,11 +502,11 @@ With the basis matrix and demographic matrix, we have most of the necessary ingr
 #| label: scalar-params
 
 # Scalar parameters for outcome data simulation
-sigmasq <- 2
+sigmasq <- 0.2
 
-tausq <- 0.001
+tausq <- 0.1
 
-lambdas_basis <- c(0.03, 0.01)
+lambdas_basis <- c(0.03, 2)
 
 lambdas_demo <- 5
 
@@ -620,7 +653,7 @@ epsilon_gamma <- rmvnorm(N, mean = rep(0, K), sigma = as.matrix(var_basis_sigma)
                          method = "svd")
 
 # Draw epsilon-Gs as N*M iid scalars
-epsilon_G <- rnorm(N*M, 0, sigmasq)
+epsilon_G <- rnorm(N*M, 0, sd = sqrt(sigmasq))
 
 epsilon_G_mx <- Matrix(epsilon_G, N, M)
 ```
@@ -631,10 +664,14 @@ Next, we combine these parameters with the known matrices to generate $\boldsymb
 #| label: data-and-gamma
 
 # Calculate soap film coefficients
-gamma_mx <- demo_mx %*% demo_effect_mx + epsilon_gamma
+gamma_true <- demo_mx %*% demo_effect_mx
+
+gamma_mx <- gamma_true + epsilon_gamma
 
 # Calculate outcome data
-outcome_mx_sim <- tcrossprod(gamma_mx, basis_mx) + epsilon_G_mx
+outcome_true <- tcrossprod(gamma_mx, basis_mx)
+
+outcome_mx_sim <- outcome_true + epsilon_G_mx
 
 ```
 
@@ -644,9 +681,6 @@ With these generated parameters, we can visualize the implied effects of our dem
 
 ```{r}
 #| label: without-errors
-
-### Calculate true outcome without error
-outcome_true <- tcrossprod(gamma_mx, basis_mx)
 
 # Create dense demographic data to visualize effect of betas
 demo_newdata <- demo_test_df %>%
@@ -660,29 +694,50 @@ demo_newdata <- demo_test_df %>%
   unnest(age) %>% 
   mutate(sex = factor(sex, levels = levels(demo_test_df$sex)))
 
+# Create design matrix for this dense data
 demo_new_design <- setup_reference_model(
   sm = demo_smooth_test, newdata = demo_newdata,
   by_var = "fusion_type", param_formula = ~sex
 )$X
 
-# Calculate true gamma without error
-gamma_effect <- demo_new_design %*% demo_effect_mx
+# Add rows for effect of fusion deviation curves
+demo_newdata_fusions_rows <- which(demo_newdata$fusion_type != levels(demo_newdata$fusion_type)[1])
 
-gamma_effect_df <- gamma_effect %>% 
+demo_newdata_dev <- demo_newdata %>% 
+  slice(demo_newdata_fusions_rows) %>% 
+  mutate(fusion_type = paste0(fusion_type, "_Only"))
+
+demo_new_design_dev <- cbind(
+  matrix(0, length(demo_newdata_fusions_rows), (Q_u + demo_age_knots - 1)),
+  demo_new_design[demo_newdata_fusions_rows, (Q_u + demo_age_knots):ncol(demo_new_design)]
+  )
+
+demo_newdata <- bind_rows(demo_newdata, demo_newdata_dev)
+
+demo_new_design <- rbind(demo_new_design, demo_new_design_dev)
+
+# Calculate true gammas across age
+beta_curve_true <- demo_new_design %*% demo_effect_mx
+
+beta_curve_df <- beta_curve_true %>% 
   as.matrix() %>% 
   as.data.frame() %>% 
+  mutate(subject = 1:n()) %>% 
   bind_cols(demo_newdata) %>% 
   pivot_longer(matches("V"), names_to = "Gamma") %>% 
   mutate(Gamma = as.numeric(str_remove(Gamma, "V")))
+
+# Identify sample of gammas to plot
+gammas_to_check <- c(1:2, 6:7, 10:12, 46:48, 64:65)
 
 ```
 
 ```{r}
 #| label: gamma-viz
-#| fig.width: 10
-#| fig.height: 15
 
-gamma_plot <- ggplot(gamma_effect_df,
+beta_effect_plot <- ggplot(beta_curve_df %>% 
+                       filter(Gamma %in% gammas_to_check &
+                                !str_detect(fusion_type, "Only")),
                      aes(x = age, y = value, color = fusion_type)) +
   geom_line() +
   facet_wrap(~Gamma, labeller = label_both) +
@@ -692,7 +747,7 @@ gamma_plot <- ggplot(gamma_effect_df,
   labs(x = "Age", y = "Gamma Value",
        title = "True Simulated Age Effects on Gammas")
 
-gamma_plot
+beta_effect_plot
 ```
 
 ```{r}
@@ -889,5 +944,298 @@ cyclic_kron_rank <- qr2rankMatrix(qr(cyclic_kron_demo))
 
 cat("Posterior Data Cyclic Plus Demo: Dimension - QR Rank =", 
     cyclic_kron_dim[2] - cyclic_kron_rank)
+```
+
+## Run Sampler
+
+```{r}
+#| label: initialize
+
+# Set initial gamma values
+gamma_init <- as(gamma_true, "sparseVector")
+
+set.seed(617)
+
+gamma_init <- gamma_init + 
+  rnorm(length(gamma_init), 0, sd(gamma_init))
+
+gamma_init <- as.vector(gamma_init)
+
+# Save true values of sigma squared and tau squared
+sigmasq_true <- sigmasq
+tausq_true <- tausq
+
+# Set scaled lambda to be substituted in as fixed value
+lambda_basis_fix <- c(1, 1) * lambdas_basis
+
+# Replace basis penalty
+pen_basis_id <- list(
+  bdiag(Diagonal(9), Matrix(0, 60, 60)),
+  cranio_soap$S[[2]]
+)
+```
+
+
+```{r}
+#| label: gibbs test
+
+if(DO_GIBBS){
+# Run Gibbs sampler
+hierarchy_test <- hierarchical_penalized_gibbs(
+  outcome_mx = outcome_mx_sim,
+  basis_mx = cranio_soap$X,
+  demo_mx = demo_ingredients_test$X,
+  pen_basis = cranio_soap$S,
+  pen_demo = demo_penalty_list_test,
+  basis_has_unpenalized = FALSE,
+  demo_has_unpenalized = TRUE,
+  gamma0 = gamma_init,
+  beta0 = 0,
+  sigmasq0 = 1,
+  tausq0 = 1,
+  lambda_basis0 = 0.1,
+  lambda_demo0 = 0.01,
+  a_sigma_pri = 1,
+  b_sigma_pri = 1,
+  a_gamma_pri = 1,
+  b_gamma_pri = 1,
+  a_tau_pri = 1,
+  b_tau_pri = 1,
+  a_alpha_pri = 1,
+  b_alpha_pri = 1,
+  iters = 20,
+  burn_pct = 0.5,
+  update_pct = 0.1
+)
+
+save(hierarchy_test, 
+     file = here::here("analysis", "intermediate", 
+                       paste0("hierachical_test_", 
+                              format(Sys.time(), "%Y-%m-%d"),
+                              ".rda")))
+} else {
+  load(file = here::here("analysis", "intermediate",
+                         paste0("hierachical_test_",
+                                LOAD_GIBBS_DATE, 
+                                ".rda")))
+}
+```
+
+```{r}
+#| label: trace data
+
+# Turn parameters into long table for trace plotting
+hier_gibbs_tr <- imap(
+  # Remove timing from output
+  hierarchy_test %>%
+    list_modify("timing" = zap(),
+                "start-stop" = zap()),
+  function(x, xn){
+    
+    x_dim <- length(dim(x))
+    
+    # Turn array into long format
+    x <- melt(x) %>% mutate(param_cat = xn)
+    
+    # Rename to identify iterations and parameter numbers
+    if(x_dim == 2){
+      
+      x <- rename(x, param_num = Var1, iter = Var2)
+      
+    } else if (x_dim == 3){
+      
+      x <- rename(x, row_num = Var1, col_num = Var2, iter = Var3)
+      
+    }
+    
+    x
+  }
+) %>%
+  # Combine
+  list_rbind() %>%
+  # Create ID for parameters to be identified
+  group_by(param_cat) %>% 
+  mutate(row_id = str_pad(row_num, 
+                          ceiling(log10(max(row_num))), 
+                          "left", "0"),
+         col_id = str_pad(col_num, 
+                          ceiling(log10(max(col_num))), 
+                          "left", "0"),
+         param1_id = str_pad(param_num, 
+                             ceiling(log10(max(param_num))), 
+                             "left", "0"),
+         is_scalar = if_else(!is.na(max(param_num)) & max(param_num) == 1, 
+                             1, 0)) %>% 
+  ungroup() %>% 
+  # Identify each unique parameter by row and column or by index in matrix
+  mutate(param_id = if_else(is.na(param_num), 
+                            paste0(row_id, "_", col_id),
+                            param1_id)) %>% 
+  select(-c(row_id, col_id, param1_id)) %>% 
+  # Identify burn-in vs. posterior distribution
+  mutate(draw_cat = if_else(str_detect(param_cat, "burn"), 
+                            "Burn-In", "Post-Burn"),
+         param_clean = str_remove(param_cat, "burn_")) %>% 
+  mutate(parameter = if_else(is_scalar == 1, param_clean,
+                             paste0(param_clean, "_", param_id))) %>% 
+  select(-is_scalar) %>% 
+  # Add true values
+  rowwise() %>% 
+  mutate(
+    value_true = ifelse(
+      param_clean == "sigma_sq",  sigmasq,
+      ifelse(
+        param_clean == "tau_sq", tausq,
+        ifelse(
+          param_clean == "lambda_basis", lambdas_basis[param_num],
+          ifelse(
+            param_clean == "lambda_demo", lambdas_demo[param_num],
+            ifelse(
+              param_clean == "beta", 
+              as.matrix(demo_effect_mx)[row_num, col_num],
+              ifelse(
+                param_clean == "gamma", as.matrix(gamma_true)[row_num, col_num]
+              ))))))
+  ) %>% 
+  ungroup()
+```
+
+```{r}
+#| label: trace plots
+
+# Trace plot of sigma
+basis_trace_hier <- ggplot(hier_gibbs_tr %>%
+                              filter(str_detect(parameter, "sigma_sq|lambda_basis"))) +
+  geom_line(aes(x = iter, y = value)) +
+  geom_hline(aes(yintercept = value_true), color = "blue") +
+  facet_wrap(~interaction(draw_cat, parameter), 
+             ncol = 2, scales = "free") +
+  labs(title = "Soap Film Variance Traces")
+
+basis_trace_hier
+
+# Trace plot of tau
+demo_trace_hier <- ggplot(hier_gibbs_tr %>%
+                              filter(str_detect(parameter, "tau_sq|lambda_demo"))) +
+  geom_line(aes(x = iter, y = value)) +
+  geom_hline(aes(yintercept = value_true), color = "blue") +
+  facet_wrap(~interaction(draw_cat, parameter), 
+             ncol = 2, scales = "free") +
+  labs(title = "Demographic Variance Traces")
+
+demo_trace_hier
+```
+
+```{r}
+#| label: coefficient scatter plots
+
+# Identify gamma parameters and true values
+gamma_vals <- hier_gibbs_tr %>%
+  filter(param_clean == "gamma" & draw_cat != "Burn-In") %>% 
+  group_by(parameter, row_num, col_num, value_true) %>% 
+  summarize(post_mean = mean(value)) %>% 
+  ungroup() %>% 
+  left_join(demo_test_df %>% mutate(row_num = 1:n())) %>% 
+  mutate(bias = post_mean - value_true,
+         soap_cat = if_else(col_num <= 9, "Boundary", "Interior"))
+
+# Plot gamma estimates against true values
+gamma_scatter <- ggplot(gamma_vals, 
+                        aes(x = value_true, 
+                            y = post_mean, 
+                            color = fusion_type,
+                            shape = soap_cat)) +
+  geom_point(alpha = 0.25) +
+  scale_shape_manual(values = c("Boundary" = 17,
+                                "Interior" = 16)) +
+  coord_fixed() +
+  labs(x = "True Value", y = "Estimate",
+       title = "Gamma (Soap Film) Coefficients")
+
+gamma_scatter
+
+# Identify beta parameters and true values
+beta_vals <- hier_gibbs_tr %>%
+  filter(param_clean == "beta" & draw_cat != "Burn-In") %>% 
+  group_by(parameter, row_num, col_num, value_true) %>% 
+  summarize(post_mean = mean(value)) %>% 
+  ungroup() %>% 
+  mutate(bias = post_mean - value_true,
+         soap_cat = if_else(col_num <= 9, "Boundary", "Interior")) %>%
+  left_join(demo_params_dict, by = c("row_num" = "param_num")) %>% 
+  mutate(effect_cat = fct_inorder(effect_cat))
+
+beta_scatter <- ggplot(beta_vals, 
+                       aes(x = value_true,
+                           y = post_mean,
+                           color = effect_cat,
+                           shape = soap_cat)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, alpha = 0.5) +
+  geom_point(alpha = 0.25) +
+  scale_shape_manual(values = c("Boundary" = 17,
+                                "Interior" = 16)) +
+  facet_wrap(~soap_cat, scales = "free") +
+  labs(x = "True Value", y = "Estimate",
+       title = "Beta (Demographic) Coefficients") +
+  ggpubr::stat_cor()
+
+beta_scatter
+
+beta_scatter_bound <- ggplot(beta_vals %>% 
+                               filter(soap_cat == "Boundary"), 
+                       aes(x = value_true, 
+                           y = post_mean,
+                           color = effect_cat)) +
+  geom_abline(slope = 1, intercept = 0, linetype = 2, alpha = 0.5) +
+  geom_point(alpha = 0.9) +
+  geom_path(alpha = 0.5, arrow = arrow(length = unit(0.1, "inches"), type = "closed")) +
+  facet_wrap(~col_num, scales = "free") +
+  labs(x = "True Value", y = "Estimate",
+       title = "Beta (Demographic) Coefficients")
+
+beta_scatter_bound
+
+beta_bias <- ggplot(beta_vals, aes(x = bias)) + 
+  geom_density() +
+  scale_x_continuous(breaks = scales::breaks_width(0.02)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r}
+#| label: demographic curves
+#| fig.height: 10
+#| fig.width: 10
+
+# Extract posterior mean estimates
+beta_post <- apply(hierarchy_test$beta, c(1,2), mean)
+
+beta_curve_est <- demo_new_design %*% beta_post
+
+beta_curve_est_df <- beta_curve_est %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  mutate(subject = 1:n()) %>% 
+  pivot_longer(matches("V"), names_to = "Gamma", values_to = "estimate") %>%
+  mutate(Gamma = as.numeric(str_remove(Gamma, "V"))) %>% 
+  left_join(beta_curve_df %>% rename(coefficient = value)) %>% 
+  pivot_longer(c(estimate, coefficient), names_to = "value_type")
+
+beta_curve_est_plot <- ggplot(beta_curve_est_df %>% 
+                           filter(Gamma %in% gammas_to_check &
+                                    str_detect(fusion_type, "Only|Norm")),
+                         aes(x = age, y = value, 
+                             color = fusion_type, linetype = value_type)) +
+  geom_line() +
+  facet_wrap(~Gamma, labeller = label_both) +
+  scale_linetype_manual(values = c("coefficient" = 1,
+                                   "estimate" = 2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Age", y = "Gamma Value",
+       title = "Simulated Age Effects")
+
+beta_curve_est_plot
+
 ```
 

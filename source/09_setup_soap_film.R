@@ -95,8 +95,8 @@ S_bound0 <- cranio_soap$S[[1]]
 S_film0 <- cranio_soap$S[[2]]
 
 # Identify different parts of penalty matrix
-cols_bound <- which(apply(S_bound0, 2, sum) != 0)
-cols_film <- which(apply(S_film0, 2, sum) != 0)
+cols_bound <- which(apply(S_bound0, 2, function(x) sum(x != 0)) != 0)
+cols_film <- which(apply(S_film0, 2, function(x) sum(x != 0)) != 0)
 
 # Get interior "film" design and penalty matrices
 so_X_film <- so_X[, cols_film]

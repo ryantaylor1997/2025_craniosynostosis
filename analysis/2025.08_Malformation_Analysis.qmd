@@ -1318,9 +1318,10 @@ $$
 
 Last, we need to specify a prior distribution for $\bbeta$. 
 
-We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_\alpha$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the spline expansions share one $\lambda_\alpha$. Therefore, 
+We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_\alpha$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the age effects can be modeled using the same spline expansion, and all spline expansions share one $\lambda_\alpha$. Therefore, 
+
 $$
-\bP_T^{(\alpha)} = \lambda_\alpha [\bI_R \otimes \bP_\alpha].
+\bP_T^{(\alpha)} = \lambda_\alpha \tilde{\bP}_\alpha = \lambda_\alpha [\bI_R \otimes \bP_\alpha].
 $$
 
 To combine $\balpha_k$ with $\btheta_k$, we also need to establish a prior variance for $\btheta_k$ that leaves no penalty for complexity on $\btheta_k$. This is accomplished by using an identity matrix to represent the prior covariance of $\btheta_k$. Then:
@@ -1422,13 +1423,13 @@ $$
 & & & && && b_\sigma + \frac{1}{2} [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)]^\top [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)] + \\
 & & & && && \frac{1}{2}[vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]^\top [\bP_T^{(\gamma)} \otimes \bI_N] [vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]) \\ \\
 & (4) & [\lambda_c | \cdot] & \sim {} && \Gamma ( && a_c + \frac{N * K_c}{2}, \\
-& & & && && b_c + \frac{1}{2 \sigma^2} [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)]^\top [\bP_c \otimes \bI_N] [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)] ) \\ \\
+& & & && && b_c + \frac{1}{2 \sigma^2} [vec(\bgamma^{(c)}) - (\bI_{K_c} \otimes \bW) vec(\bbeta^{(c)})]^\top [\bP_c \otimes \bI_N] [vec(\bgamma^{(c)}) - (\bI_{K_c} \otimes \bW) vec(\bbeta^{(c)})] ) \\ \\
 & (5) & [\lambda_f | \cdot] & \sim {} && \Gamma ( && a_f + \frac{N * K_f}{2}, \\
-& & & && && b_f + \frac{1}{2 \sigma^2} [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)]^\top [\bP_f \otimes \bI_N] [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)] ) \\ \\
+& & & && && b_f + \frac{1}{2 \sigma^2} [vec(\bgamma^{(f)}) - (\bI_{K_f} \otimes \bW) vec(\bbeta^{(f)})]^\top [\bP_f \otimes \bI_N] [vec(\bgamma^{(f)}) - (\bI_{K_f} \otimes \bW) vec(\bbeta^{(f)})] ) \\ \\
 & (6) & [\tau^2 | \cdot] & \sim {} && \Gamma^{-1} ( && a_\tau + \frac{Q*K}{2}, \\
 & & & && && b_\tau + \frac{1}{2} vec(\bbeta)^\top (\bI_K \otimes \bP_T^{(\beta)}) vec(\bbeta) ) \\ \\
 & (7) & [\lambda_\alpha | \cdot] & \sim {} && \Gamma ( && a_\alpha + \frac{R*L*K}{2}, \\
-& & & && && b_\alpha + \frac{1}{2 \tau^2} vec(\balpha^\top)^\top (\bP_\alpha \otimes \bI_K) vec(\balpha^\top) )
+& & & && && b_\alpha + \frac{1}{2 \tau^2} vec(\balpha^\top)^\top (\tilde{\bP}_\alpha \otimes \bI_K) vec(\balpha^\top) )
 \end{alignat*}
 $$
 
