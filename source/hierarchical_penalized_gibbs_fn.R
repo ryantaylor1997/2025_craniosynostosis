@@ -194,12 +194,14 @@ hierarchical_penalized_gibbs <- function(
 
   ### Run MCMC loop
 
+  update_iters <- floor(seq(0, iters, (iters * update_pct)))[-1]
+
   cat("MCMC Status: \n")
 
   for(iter in 1:iters){
 
     # Output on checkpoints
-    if((iter / iters) %% update_pct == 0){
+    if(iter %in% update_iters){
       cat("at turn", iter, "after",
           difftime(Sys.time(), time_pts[["start"]], units = "secs"),
           "seconds \n")
@@ -260,8 +262,8 @@ hierarchical_penalized_gibbs <- function(
     # Use custom function to perform Cholesky decomposition on sparse Matrix
     gamma <- t(rmvnorm_Matrix(n = 1, gamma_expect, gamma_var))
 
-    ### *** DRAFT *** : Set Gammas to fixed value
-    gamma <- Matrix(as(gamma_true, "sparseVector"), N*K, 1)
+    # ### *** DRAFT *** : Set Gammas to fixed value
+    # gamma <- Matrix(as(gamma_true, "sparseVector"), N*K, 1)
 
     gamma_mx <- Matrix(as(gamma, "sparseVector"), N, K, byrow = F)
 
@@ -326,8 +328,8 @@ hierarchical_penalized_gibbs <- function(
     precision_data <- rgamma(1, a_sigma_post, rate = b_sigma_post)
     sigmasq <- 1 / precision_data
 
-    ### *** DRAFT *** : Set sigma squared to initial value
-    sigmasq <- sigmasq_true
+    # ### *** DRAFT *** : Set sigma squared to initial value
+    # sigmasq <- sigmasq_true
 
     timer["sigma2_update"] <- timer["sigma2_update"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -345,8 +347,8 @@ hierarchical_penalized_gibbs <- function(
     precision_param <- rgamma(1, a_tau_post, rate = b_tau_post)
     tausq <- 1 / precision_param
 
-    ### *** DRAFT *** : Set tau squared to initial value
-    tausq <- tausq_true
+    # ### *** DRAFT *** : Set tau squared to initial value
+    # tausq <- tausq_true
 
     timer["tau2_update"] <- timer["tau2_update"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -393,8 +395,8 @@ hierarchical_penalized_gibbs <- function(
         rgamma(1, a_new, rate = b_new)
       })
 
-    ### *** DRAFT *** : Set basis lambdas to fixed value
-    lambda_basis <- lambda_basis_fix
+    # ### *** DRAFT *** : Set basis lambdas to fixed value
+    # lambda_basis <- lambda_basis_fix
 
     timer["lambdas_basis_update"] <- timer["lambdas_basis_update"] +
       difftime(Sys.time(), time_check, units = "mins")
@@ -435,8 +437,8 @@ hierarchical_penalized_gibbs <- function(
         rgamma(1, a_new, rate = b_new)
       })
 
-    ### *** DRAFT *** : Set basis lambdas to fixed value
-    lambda_demo <- lambdas_demo
+    # ### *** DRAFT *** : Set basis lambdas to fixed value
+    # lambda_demo <- lambdas_demo
 
     timer["lambdas_demo_update"] <- timer["lambdas_demo_update"] +
       difftime(Sys.time(), time_check, units = "mins")

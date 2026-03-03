@@ -264,6 +264,9 @@ demo_test_df <- tibble(
   mutate(fusion_type = factor(fusion_type,
                               levels = c("Normative", "Fusion_1", "Fusion_2")),
          sex = as.factor(sex))
+
+save(demo_test_df, file = here::here("analysis", "intermediate",
+                         paste0("simulation_demographics.rda")))
 ```
 
 The resulting distribution of ages is:
@@ -292,25 +295,27 @@ Next, we use these simulated demographics to generate the demographic model matr
 demo_age_knots <- 14
 ```
 
-We use a cubic regression spline *with shrinkage* with `r demo_age_knots` basis functions for the nonlinear function of age. To construct the basis expansion, we use the `mgcv::smooth.construct2` function. We denote these functions as $h^*_1(Age), \ldots, h^*_{L+1}(Age)$.
+We use a thin plate regression spline *with shrinkage* with `r demo_age_knots` basis functions for the nonlinear function of age. To construct the basis expansion, we use the `mgcv::smooth.construct2` function. We denote these functions as $h^*_1(Age), \ldots, h^*_{L+1}(Age)$.
 
 ```{r}
 #| label: demographic-basis-expansion
 
 # Specify smooth object
-demo_smooth_obj <- s(age, bs = "tp", k = demo_age_knots)
+demo_s_obj <- s(age, bs = "tp", k = demo_age_knots)
 
 demo_smooth_noshrink <- smooth.construct2(
-  demo_smooth_obj, data = demo_test_df, knots = NULL
+  demo_s_obj, data = demo_test_df, knots = NULL
 )
 
 # Specify multiple of last eigenvalue to multiply by
 shrink_eigen_mult <- 1e-5
-attr(demo_smooth_obj, "shrink") <- shrink_eigen_mult
+
+demo_s_shrink <- s(age, bs = "ts", k = demo_age_knots)
+attr(demo_s_shrink, "shrink") <- shrink_eigen_mult
 
 # Construct basis expansion and penalty matrix
 demo_smooth_test <- smooth.construct2(
-  demo_smooth_obj, data = demo_test_df, knots = NULL
+  demo_s_shrink, data = demo_test_df, knots = NULL
 )
 
 # Adjust penalty matrix for underflow
@@ -323,68 +328,6 @@ demo_smooth_test$S[[1]] <- demo_smooth_test$S[[1]] * scale_demo_penalty
 demo_smooth_noshrink$S[[1]] <- demo_smooth_noshrink$S[[1]] * scale_demo_penalty
 ```
 
-These basis functions and their associated penalty matrix $\mathbf{P}_\alpha$ take the following form:
-
-```{r}
-#| label: demo-expansion-viz
-
-# Join basis function values with age
-demo_expansion_df <- demo_smooth_test$X %>% 
-  reshape2::melt() %>% 
-  rename(row = Var1, fn = Var2) %>% 
-  left_join(demo_test_df %>% mutate(row = 1:n()))
-
-# Plot basis functions
-
-demo_basis_plot <- ggplot(demo_expansion_df) +
-  geom_line(aes(x = age, y = value, color = as.factor(fn))) +
-  scale_color_manual(values = unname(pals::alphabet2())) +
-  geom_point(inherit.aes = F,
-             data = enframe(demo_smooth_test$xp),
-             aes(x = value, y = 0),
-             fill = "yellow", shape = 23) +
-  theme_minimal() +
-  theme(legend.position = "bottom") +
-  labs(x = "Age", y = "Function Value", color = "Basis Function")
-
-demo_basis_plot
-
-# Plot penalty matrix
-demo_expansion_s_plot <- demo_smooth_test$S[[1]] %>% 
-  reshape2::melt() %>% 
-  rename(row = Var1, col = Var2) %>% 
-  mutate(type = "shrink") %>% 
-  bind_rows(
-    demo_smooth_noshrink$S[[1]] %>% 
-      reshape2::melt() %>% 
-      rename(row = Var1, col = Var2) %>% 
-      mutate(type = "no shrink")
-  ) %>% 
-  ggplot(aes(x = col, y = -row, fill = value)) +
-  geom_tile() +
-  scale_fill_gradient2(transform = "pseudo_log",
-                       breaks = c(-1 * c(10^c(0:log10(max(demo_smooth_test$S[[1]])), 1)),
-                                  c(10^c(0:log10(max(demo_smooth_test$S[[1]])), 1)))) +
-  scale_x_continuous(breaks = scales::breaks_width(1)) +
-  scale_y_continuous(breaks = scales::breaks_width(1)) +
-  facet_wrap(~type) +
-  labs(title = "Demographics Penalty Matrix")
-
-demo_expansion_s_plot
-
-demo_s_diff_plot <- (demo_smooth_test$S[[1]] - demo_smooth_noshrink$S[[1]]) %>% 
-  reshape2::melt() %>% 
-  rename(row = Var1, col = Var2) %>% 
-  ggplot(aes(x = col, y = -row, fill = value)) +
-  geom_tile() +
-  scale_fill_gradient2() +
-  scale_x_continuous(breaks = scales::breaks_width(1)) +
-  scale_y_continuous(breaks = scales::breaks_width(1)) +
-  labs(title = "Demographics Penalty Shrinkage Difference")
-
-demo_s_diff_plot
-```
-
 For our model assumptions, we assume that these basis functions are added as covariates in an additive model that already contains an intercept. Therefore, we will have identifiability constraints if we keep all $L+1$ basis functions describing age. To address this issue, we center each of the basis functions and remove the last one. Likewise, we remove the last row and column of the penalty matrix from this smooth.
 
 In addition, we want to estimate the effect of each suture fusion type as a deviation from Normative growth associated with age. Therefore, we transform the design matrix of basis functions into a "reference-coded" set of basis expansions. The nonlinear age effect for all patients is estimated using the normative set of basis functions, and a separate nonlinear age-related effect is estimated for each of the suture fusions as an additive effect on top of this normative effect.
@@ -392,14 +335,18 @@ In addition, we want to estimate the effect of each suture fusion type as a devi
 ```{r}
 #| label: setup-reference-smooth
 
-# Attach name of the dataset to this smooth
-attr(demo_smooth_test, "data") <- "demo_test_df"
-
 # Use function to reference-code smooth by fusion type
-demo_ingredients_test <- setup_reference_model(
-  sm = demo_smooth_test,
+demo_ingredients_test <- construct_reference_smooth(
+  sm = demo_s_shrink, dat = demo_test_df,
   by_var = "fusion_type", param_formula = ~sex
 )
+
+# Scale penalty matrices to be similar in size to soap film
+scale_demo_pen <- norm(cranio_soap$S[[1]], type = "O") / 
+  norm(demo_ingredients_test$S[[2]], type = "O")
+
+demo_ingredients_test$S[-1] <- map(demo_ingredients_test$S[-1],
+                                   ~.x * scale_demo_pen)
 
 # Combine suture fusion penalties so we estimate the same lambda
 demo_penalty_list_test <- list(demo_ingredients_test$S[[1]],
@@ -428,6 +375,64 @@ demo_params_dict <- tibble(
                                  3 ~ "Fusion 1",
                                  4 ~ "Fusion 2")) %>% 
   select(-block_num)
+```
+
+These basis functions and their associated penalty matrix $\mathbf{P}_\alpha$ take the following form:
+
+```{r}
+#| label: demo-expansion-viz
+
+# Join basis function values with age
+demo_expansion_df <- demo_ingredients_test$smooth[[1]]$X0 %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, fn = Var2) %>% 
+  left_join(demo_test_df %>% mutate(row = 1:n()))
+
+# Plot basis functions
+
+demo_basis_plot <- ggplot(demo_expansion_df) +
+  geom_line(aes(x = age, y = value, color = as.factor(fn))) +
+  scale_color_manual(values = unname(pals::alphabet2())) +
+  geom_point(inherit.aes = F,
+             data = enframe(demo_smooth_test$xp),
+             aes(x = value, y = 0),
+             fill = "yellow", shape = 23) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(x = "Age", y = "Function Value", color = "Basis Function")
+
+demo_basis_plot
+
+# Plot penalty matrix
+demo_expansion_s_df <- demo_ingredients_test$smooth[[1]]$S[[1]] %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, col = Var2)
+
+demo_expansion_s_plot <- demo_expansion_s_df %>% 
+  ggplot(aes(x = col, y = -row, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2(transform = scales::transform_pseudo_log(sigma = 0.1e-6),
+                       breaks = c(-c(10^c(-7:-4)), 10^c(-7:-4))) +
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  scale_y_continuous(breaks = scales::breaks_width(1)) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(angle = 45, hjust = 0)) +
+  labs(title = "Demographics Penalty Matrix")
+
+demo_expansion_s_plot
+
+demo_s_diff_plot <- (demo_smooth_test$S[[1]] - demo_smooth_noshrink$S[[1]]) %>% 
+  reshape2::melt() %>% 
+  rename(row = Var1, col = Var2) %>% 
+  ggplot(aes(x = col, y = -row, fill = value)) +
+  geom_tile() +
+  scale_fill_gradient2() +
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  scale_y_continuous(breaks = scales::breaks_width(1)) +
+  theme(legend.position = "bottom") +
+  labs(title = "Demographics Penalty Shrinkage Difference")
+
+demo_s_diff_plot
 ```
 
 To illustrate the result, we summarize the average basis function values by basis function and by suture type. We also plot the values in the penalty matrices representing the two parametric covariates and the 27 penalized covariates. The first penalty matrix will not multiplied by a smoothing constant, and the second will be multiplied by $\lambda_\alpha$.
@@ -504,11 +509,11 @@ With the basis matrix and demographic matrix, we have most of the necessary ingr
 # Scalar parameters for outcome data simulation
 sigmasq <- 0.2
 
-tausq <- 0.1
+tausq <- 1e-6
 
 lambdas_basis <- c(0.03, 2)
 
-lambdas_demo <- 5
+lambdas_demo <- 5e-10
 
 # Set other arguments for the data simulation function
 demo_has_unpenalized = T
@@ -602,7 +607,7 @@ penalty_total_basis_mx <- Reduce("+", penalty_total_basis_list)
 
 ## Prior Variance Terms
 
-With the total variance matrices constructed, we take their pseudo-inverses. Each penalty matrix is not full-rank, so our prior assumptions for $\boldsymbol{\epsilon}^{(\gamma)}$ and $\boldsymbol{\beta}$ are improper, but *we think* they result in proper posterior distributions.
+With the total variance matrices constructed, we take their pseudo-inverses. The soap film penalty matrix is not full-rank, so our prior assumption for $\boldsymbol{\epsilon}^{(\gamma)}$ is improper, but adding it together with the proper prior precision matrix for $\beta$ results in proper posterior distributions.
 
 ```{r}
 #| label: prior-variance-matrices
@@ -692,13 +697,23 @@ demo_newdata <- demo_test_df %>%
   ungroup() %>%
   mutate(sex = 0) %>%
   unnest(age) %>% 
-  mutate(sex = factor(sex, levels = levels(demo_test_df$sex)))
+  mutate(sex = factor(sex, levels = levels(demo_test_df$sex)),
+         fusion_type = factor(fusion_type, levels = levels(demo_test_df$fusion_type)))
 
-# Create design matrix for this dense data
-demo_new_design <- setup_reference_model(
-  sm = demo_smooth_test, newdata = demo_newdata,
-  by_var = "fusion_type", param_formula = ~sex
-)$X
+## Create design matrix for this dense data
+
+# Create predictions by fusion type
+demo_new_X_list <- map(demo_ingredients_test$smooth,
+                       ~PredictMat(.x, data = demo_newdata))
+
+# Combine to create Normative and add unpenalized terms
+demo_new_design <- Reduce(
+  "cbind", c(
+    list(
+    model.matrix(~sex, data = demo_newdata),
+    Reduce("+", demo_new_X_list)), 
+    demo_new_X_list[-1]
+  ))
 
 # Add rows for effect of fusion deviation curves
 demo_newdata_fusions_rows <- which(demo_newdata$fusion_type != levels(demo_newdata$fusion_type)[1])
@@ -730,6 +745,17 @@ beta_curve_df <- beta_curve_true %>%
 # Identify sample of gammas to plot
 gammas_to_check <- c(1:2, 6:7, 10:12, 46:48, 64:65)
 
+# Separately create data to see what gammas actually look like
+gamma_curve_data_df <- demo_test_df %>% 
+  bind_cols(as.data.frame(as.matrix(gamma_true))) %>% 
+  pivot_longer(starts_with("V")) %>% 
+  mutate(Gamma = as.numeric(str_remove_all(name, "V")))
+
+save(demo_new_design, demo_newdata, gamma_true, demo_effect_mx,
+     file = here::here("analysis", "intermediate",
+                         paste0("hierachical_test_true_vals_",
+                                format(Sys.time(), "%Y-%m-%d"), 
+                                ".rda")))
 ```
 
 ```{r}
@@ -748,6 +774,19 @@ beta_effect_plot <- ggplot(beta_curve_df %>%
        title = "True Simulated Age Effects on Gammas")
 
 beta_effect_plot
+
+beta_data_plot <- ggplot(gamma_curve_data_df %>% 
+                           filter(Gamma %in% gammas_to_check & sex == 0),
+                     aes(x = age, y = value, color = fusion_type)) +
+  geom_line() +
+  facet_wrap(~Gamma, labeller = label_both) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Age", y = "Gamma Value",
+       title = "Simulated Gammas by Age")
+
+beta_data_plot
 ```
 
 ```{r}
@@ -1003,7 +1042,7 @@ hierarchy_test <- hierarchical_penalized_gibbs(
   b_tau_pri = 1,
   a_alpha_pri = 1,
   b_alpha_pri = 1,
-  iters = 20,
+  iters = 200,
   burn_pct = 0.5,
   update_pct = 0.1
 )
@@ -1146,9 +1185,11 @@ gamma_scatter <- ggplot(gamma_vals,
                             color = fusion_type,
                             shape = soap_cat)) +
   geom_point(alpha = 0.25) +
+  ggpubr::stat_cor() +
   scale_shape_manual(values = c("Boundary" = 17,
                                 "Interior" = 16)) +
-  coord_fixed() +
+  facet_grid(fusion_type~soap_cat, scales = "free") +
+  theme(legend.position = "bottom") +
   labs(x = "True Value", y = "Estimate",
        title = "Gamma (Soap Film) Coefficients")
 
@@ -1172,17 +1213,19 @@ beta_scatter <- ggplot(beta_vals,
                            shape = soap_cat)) +
   geom_abline(slope = 1, intercept = 0, linetype = 2, alpha = 0.5) +
   geom_point(alpha = 0.25) +
+  ggpubr::stat_cor() +
   scale_shape_manual(values = c("Boundary" = 17,
                                 "Interior" = 16)) +
   facet_wrap(~soap_cat, scales = "free") +
+  theme(legend.position = "bottom") +
   labs(x = "True Value", y = "Estimate",
-       title = "Beta (Demographic) Coefficients") +
-  ggpubr::stat_cor()
+       title = "Beta (Demographic) Coefficients")
 
 beta_scatter
 
 beta_scatter_bound <- ggplot(beta_vals %>% 
-                               filter(soap_cat == "Boundary"), 
+                               filter(soap_cat == "Boundary" | 
+                                        col_num <= 12), 
                        aes(x = value_true, 
                            y = post_mean,
                            color = effect_cat)) +
@@ -1190,15 +1233,11 @@ beta_scatter_bound <- ggplot(beta_vals %>%
   geom_point(alpha = 0.9) +
   geom_path(alpha = 0.5, arrow = arrow(length = unit(0.1, "inches"), type = "closed")) +
   facet_wrap(~col_num, scales = "free") +
+  theme(legend.position = "bottom") +
   labs(x = "True Value", y = "Estimate",
        title = "Beta (Demographic) Coefficients")
 
 beta_scatter_bound
-
-beta_bias <- ggplot(beta_vals, aes(x = bias)) + 
-  geom_density() +
-  scale_x_continuous(breaks = scales::breaks_width(0.02)) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 
 ```{r}
@@ -1226,7 +1265,7 @@ beta_curve_est_plot <- ggplot(beta_curve_est_df %>%
                          aes(x = age, y = value, 
                              color = fusion_type, linetype = value_type)) +
   geom_line() +
-  facet_wrap(~Gamma, labeller = label_both) +
+  facet_wrap(~Gamma, labeller = label_both, scales = "free_y") +
   scale_linetype_manual(values = c("coefficient" = 1,
                                    "estimate" = 2)) +
   theme_minimal() +
@@ -1237,5 +1276,30 @@ beta_curve_est_plot <- ggplot(beta_curve_est_df %>%
 
 beta_curve_est_plot
 
+```
+
+```{r}
+#| label: diagnose bias
+
+# Make table of bias from these terms
+beta_bias_tbl <- beta_vals %>% 
+  select(parameter, bias, soap_cat, effect_cat, row_num, col_num) %>% 
+  arrange(desc(abs(bias)))
+
+# Summarize mean bias for normative curves
+beta_normative_bias <- beta_curve_est_df %>% 
+  filter(fusion_type == "Normative") %>% 
+  group_by(Gamma, value_type) %>% 
+  summarize(mean = mean(value)) %>% 
+  mutate(bias = mean - lag(mean, 1)) %>% 
+  ungroup() %>% 
+  filter(!is.na(bias)) %>% 
+  arrange(desc(abs(bias)))
+
+# Bias histogram
+beta_bias <- ggplot(beta_vals, aes(x = bias)) + 
+  geom_density() +
+  scale_x_continuous(breaks = scales::breaks_width(0.02)) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
 ```
 

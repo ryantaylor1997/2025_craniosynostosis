@@ -167,6 +167,8 @@ load(file = here::here("analysis", "intermediate", "soap_object.rda"))
 
 # Introduction
 
+## Table 1
+
 ```{r}
 #| label: table1
 
@@ -195,6 +197,8 @@ t1_p <- t1 %>%
   as_kable_extra(booktabs = T, format = "latex")
 ```
 
+## Average by fusion
+
 ```{r}
 #| label: normative shape
 
@@ -215,8 +219,7 @@ plot_fusion <- ggplot(matrix_fusion %>%
   coord_fixed() +
   theme_void() +
   scale_fill_viridis_c(option = "turbo") +
-  labs(title = "Normative Average Growth",
-       fill = "Avg. Growth") +
+  labs(fill = "Avg. Growth") +
   theme(legend.position = "bottom")
 
 ggsave("../results/2026 ENAR Figures/fusion_norm_average.png",
@@ -224,6 +227,7 @@ ggsave("../results/2026 ENAR Figures/fusion_norm_average.png",
        height = 8, width = 5, units = "in")
 ```
 
+## Average by fusion and age bins
 
 ```{r}
 #| label: fusion age
@@ -262,7 +266,8 @@ matrix_age_fusion <- cranio_matrix %>%
   ungroup()
 
 # Plot brain map by fusion type and age
-plot_fusion_age <- ggplot(matrix_age_fusion) +
+plot_fusion_age <- ggplot(matrix_age_fusion %>% 
+                            filter(fusion_type %in% c("Normative", "Sagittal"))) +
   geom_raster(aes(x = row, y = col, fill = diff_avg)) +
   facet_grid(fusion_type ~ age_bin,
              labeller = label_wrap_gen(width = 10)) +
@@ -271,16 +276,17 @@ plot_fusion_age <- ggplot(matrix_age_fusion) +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
-  labs(title = "Fusion - Age Average Growth",
-       fill = "Avg. Growth") +
+  labs(fill = "Avg. Growth") +
   theme(legend.position = "bottom")
 
 ggsave("../results/2026 ENAR Figures/fusion_age_average.png",
        plot_fusion_age,
-       height = 8, width = 5, units = "in")
+       height = 3, width = 6, units = "in")
 ```
 
-# Spatial Modeling
+# Methods
+
+## Fit tensor product models
 
 ```{r}
 #| label: 2d gam
@@ -338,7 +344,7 @@ plot_model_fusion <- ggplot() +
   geom_raster(data = fusion_model_summ,
               aes(x = row, y = col, fill = fit)) +
   geom_sf(data = cranio_bound_shape, fill = NA, linewidth = 1) +
-  facet_wrap(~fusion_type, nrow = 2) +
+  facet_wrap(~fusion_type, nrow = 1) +
   scale_fill_viridis_c(option = "turbo") +
   scale_alpha(range = c(0.5, 1), guide = "none") +
   theme_void() +
@@ -351,8 +357,10 @@ plot_model_fusion
 
 ggsave("../results/2026 ENAR Figures/fusion_tensors.png",
        plot_model_fusion,
-       height = 5, width = 6, units = "in")
+       height = 2, width = 6, units = "in")
 ```
+
+## Plot soap film basis functions
 
 ```{r}
 #| label: plot basis functions
@@ -432,8 +440,7 @@ soap_basis_cyclic <- ggplot(data = basis_df %>%
   scale_color_brewer(palette = "Paired") +
   labs(x = "Distance Along Boundary",
        y = "Function Value",
-       color = "Basis Fn.",
-       title = "Boundary Cyclic Basis Functions") +
+       color = "Basis Fn.") +
   theme_minimal() +
   theme(legend.position = "bottom") +
   guides(color = guide_legend(nrow = 1, byrow = T))
@@ -447,8 +454,7 @@ soap_basis_bd <- ggplot() +
   geom_raster(data = basis_df %>% filter(fn_cat == "Boundary"),
               aes(x = row, y = col, fill = value)) +
   scale_fill_viridis_c() +
-  labs(x = NULL, y = NULL, fill = "Fn. Value",
-       title = "Boundary Basis Functions") +
+  labs(x = NULL, y = NULL, fill = "Fn. Value") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
@@ -469,8 +475,7 @@ soap_basis_int <- ggplot() +
              aes(x = row, y = col),
              color ="red", size = 0.01) +
   scale_fill_viridis_c() +
-  labs(x = NULL, y = NULL, fill = "Fn. Value",
-       title = "Interior Basis Functions") +
+  labs(x = NULL, y = NULL, fill = "Fn. Value") +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
@@ -478,23 +483,133 @@ soap_basis_int <- ggplot() +
 
 ggsave("../results/2026 ENAR Figures/basis_interior.png",
        soap_basis_int,
-       height = 6, width = 6, units = "in")
+       height = 6, width = 3, units = "in")
 ```
 
-# Demographic Modeling
+# Results
+
+## Load simulation results
 
 ```{r}
-#| label: age effect
+#| label: simulation object
 
-# Plot 1 age smoothed effect per region
-plot_pixel_pred <- ggplot(model_pixel_smooth,
-                          aes(x = age, y = fit)) +
-  geom_line(aes(group = interaction(row, col)),
-            color = "blue", alpha = 0.05, linewidth = 0.05) +
-  geom_smooth(color = "red") +
-  labs(x = "Age (Days)", y = "Predicted Growth (No Fusion Female)") +
-  theme_minimal()
+sim_date <- "2026-03-02"
 
+# Output from the most recent Gibbs sampler (hierarchy_test)
+load(file = here::here("analysis", "intermediate",
+                       paste0("hierachical_test_",
+                              sim_date, 
+                              ".rda")))
+
+# True values from the same day
+load(file = here::here("analysis", "intermediate",
+                       paste0("hierachical_test_true_vals_",
+                              sim_date, 
+                              ".rda")))
+
+# Identify sample of gammas to plot
+gammas_to_check <- c(1:2, 6:7, 48:49, 64:65)
+```
+
+## Visualize beta curves
+
+```{r}
+#| label: beta effect curves
+
+# Calculate true gammas across age
+beta_curve_true <- demo_new_design %*% demo_effect_mx
+
+beta_curve_df <- beta_curve_true %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  mutate(subject = 1:n()) %>% 
+  bind_cols(demo_newdata) %>% 
+  pivot_longer(matches("V"), names_to = "Gamma") %>% 
+  mutate(Gamma = as.numeric(str_remove(Gamma, "V")))
+
+# Extract posterior mean estimates
+beta_post <- apply(hierarchy_test$beta, c(1,2), mean)
+
+beta_curve_est <- demo_new_design %*% beta_post
+
+beta_curve_est_df <- beta_curve_est %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  mutate(subject = 1:n()) %>% 
+  pivot_longer(matches("V"), names_to = "Gamma", values_to = "estimate") %>%
+  mutate(Gamma = as.numeric(str_remove(Gamma, "V"))) %>% 
+  left_join(beta_curve_df %>% rename(coefficient = value)) %>% 
+  pivot_longer(c(estimate, coefficient), names_to = "value_type") %>% 
+  mutate(value_type = case_match(value_type, 
+                                 "coefficient" ~ "True",
+                                 "estimate" ~ "Est."))
+
+beta_curve_est_plot <- ggplot(beta_curve_est_df %>% 
+                           filter(Gamma %in% gammas_to_check &
+                                    str_detect(fusion_type, "Only|Norm")),
+                         aes(x = age, y = value, 
+                             color = fusion_type, linetype = value_type)) +
+  geom_line() +
+  facet_wrap(~Gamma, labeller = label_both, scales = "free_y", nrow = 2) +
+  scale_linetype_manual(values = c("True" = 1,
+                                   "Est." = 5)) +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        legend.box = "vertical",
+        axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(x = "Age", y = "Gamma Value",
+       linetype = "Type", color = "Fusion")
+
+beta_curve_est_plot
+
+ggsave("../results/2026 ENAR Figures/beta_curves_simulated.png",
+       beta_curve_est_plot,
+       height = 4, width = 6, units = "in")
+```
+
+## Check gamma coefficients
+
+```{r}
+#| label: gamma scatter
+
+# Load actual individuals we're fitting data on (demo_test_df)
+load(file = here::here("analysis", "intermediate",
+                         paste0("simulation_demographics.rda")))
+
+# Take posterior mean of gammas
+gamma_post <- apply(hierarchy_test$gamma, c(1,2), mean)
+
+# Turn into DF and merge with true values
+gamma_vals <- reshape2::melt(gamma_post) %>% 
+  left_join(reshape2::melt(as.matrix(gamma_true), value.name = "true")) %>% 
+  rename(row = Var1, col = Var2) %>% 
+  left_join(demo_test_df %>% mutate(row = 1:n())) %>% 
+  mutate(soap_cat = if_else(col <= 9, "Boundary", "Interior"))
+
+# Plot gamma estimates against true values
+gamma_scatter <- ggplot(gamma_vals, 
+                        aes(x = true, 
+                            y = value, 
+                            color = fusion_type,
+                            shape = soap_cat)) +
+  geom_point(alpha = 0.25) +
+  ggpubr::stat_cor(aes(label = after_stat(rr.label)),
+                   r.digits = 2,
+                   label.x.npc = 0, label.y.npc = 1) +
+  scale_shape_manual(values = c("Boundary" = 17,
+                                "Interior" = 16)) +
+  facet_grid(fusion_type~soap_cat, scales = "free") +
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        legend.box = "vertical") +
+  labs(x = "True Value", y = "Estimate",
+       color = "Fusion", shape = "Soap Film Basis")
+
+gamma_scatter
+
+ggsave("../results/2026 ENAR Figures/gamma_simulated.png",
+       gamma_scatter,
+       height = 5, width = 6, units = "in")
 
 ```
 
