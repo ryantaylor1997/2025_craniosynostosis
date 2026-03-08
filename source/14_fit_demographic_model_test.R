@@ -4,10 +4,8 @@
 ## Load all coefficients previously fit, along with demographics
 gcv_coeffs <- read_csv(here::here("analysis", "intermediate", "individual_soap_coeffs.csv"))
 
-cranio_coeff_df <- gcv_coeffs %>%
-  mutate(fusion_type = fct_infreq(fusion_type),
-         sex = factor(sex, levels = c(0,1)))
-
+cranio_coeff_df <- cranio_sub %>%
+  left_join(gcv_coeffs %>% select(fname, matches("beta")))
 
 # Visualize some soap film basis coefficients by age ----------------------
 
@@ -37,28 +35,27 @@ coeff_plots <- ggplot(coeff_toplot %>%
 ### Create cubic regression basis splines for age
 
 # Construct smooth without constraint or factor levels
-cranio_coeff_smooth <- smooth.construct2(
-  s(age, bs = "cr", k = cranio_knots_age),
-  data = cranio_coeff_df, knots = NULL
-)
-
-# Attach name of the dataset to this smooth
-attr(cranio_coeff_smooth, "data") <- "cranio_coeff_df"
+cranio_coeff_smooth <- s(age, bs = "ts", k = cranio_knots_age)
 
 ## Create design and penalty matrices using functions we wrote
-coeff_ingredients <- setup_reference_model(
-  sm = cranio_coeff_smooth,
+cranio_coeff_ingredients <- construct_reference_smooth(
+  sm = cranio_coeff_smooth, dat = cranio_coeff_df,
   by_var = "fusion_type", param_formula = ~sex
 )
 
 # Combine suture fusion penalties so we estimate the same lambda
-coeff_S_combo <- list(coeff_ingredients$S[[1]],
-                      Reduce("+", coeff_ingredients$S[-1]))
+cranio_coeff_S_combo <- list(cranio_coeff_ingredients$S[[1]],
+                             Reduce("+", cranio_coeff_ingredients$S[-1]))
+
+# Adjust penalty matrices for underflow
+scale_coeff_penalty <- norm(cranio_soap$S[[1]], type = "O") /
+  norm(cranio_coeff_ingredients$smooth[[1]]$S[[1]], type = "O")
+
+cranio_coeff_S_combo <- map(cranio_coeff_S_combo, ~ .x * scale_coeff_penalty)
 
 # Save intermediate steps to share
-save(coeff_ingredients,
+save(cranio_coeff_ingredients,
      file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
-
 
 # Run Gibbs sampler for coefficient models --------------------------------
 
@@ -81,12 +78,10 @@ def_pars_coeff <- c(
 # Set iterations
 bayes_coeff_iters <- 5e3
 
-set.seed(700)
-
 # Run function
 coeff_bayes1 <- lm_penalized_gibbs(
-  y = coeff_y, X = coeff_ingredients$X,
-  S = coeff_S_combo, has_unpenalized = TRUE,
+  y = coeff_y, X = cranio_coeff_ingredients$X,
+  S = cranio_coeff_S_combo, has_unpenalized = TRUE,
   beta0 = def_pars_coeff["beta"],
   sigmasq0 = def_pars_coeff["sigma_sq"],
   lambda0 = def_pars_coeff["lambda"],
@@ -129,7 +124,7 @@ coeff_bayes1_tr <- imap(
   unname() %>%
   list_rbind() %>%
   mutate(draw_cat = if_else(draw == "burn_",
-                            "Burn-In", "Posterior"),
+                            "Burn-In", "Post-Burn-In"),
          param_num = as.numeric(str_extract(name, "[0-9]+"))) %>%
   mutate(param_num = coalesce(param_num, 1))
 
@@ -187,11 +182,18 @@ coeff_newdata <- cranio_coeff_df %>%
   unnest(age) %>% unnest(sex) %>%
   mutate(sex = factor(sex, levels = levels(cranio_coeff_df$sex)))
 
-# Run function to convert this to design matrix
-coeff_new_design <- setup_reference_model(
-  sm = cranio_coeff_smooth, newdata = coeff_newdata,
-  by_var = "fusion_type", param_formula = ~sex
-)$X
+# Convert this to design matrix
+coeff_new_X_list <- map(cranio_coeff_ingredients$smooth,
+                       ~PredictMat(.x, data = coeff_newdata))
+
+# Combine to create Normative and add unpenalized terms
+coeff_new_design <- Reduce(
+  "cbind", c(
+    list(
+      model.matrix(~sex, data = coeff_newdata),
+      Reduce("+", coeff_new_X_list)),
+    coeff_new_X_list[-1]
+  ))
 
 ## Calculate predictions
 coeff_bayes1_preds <- tcrossprod(coeff_new_design, coeff_bayes1$beta)

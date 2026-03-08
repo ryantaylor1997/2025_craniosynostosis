@@ -220,7 +220,6 @@ basis_s_plot <- basis_s %>%
 basis_s_plot
 ```
 
-
 # Individual Demographics
 
 ## Demographic Generation

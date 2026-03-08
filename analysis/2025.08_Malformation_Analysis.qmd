@@ -138,6 +138,7 @@ DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
 DO_INDIV_SOAPS <- F
+DO_JOINT_FIT <- T
 
 # Set a flag for what not to delete
 RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
@@ -920,6 +921,8 @@ $$
 ```{r}
 #| label: bayes-soap-film-test
 
+set.seed(978)
+
 source(here("source", "13_fit_soap_film_bayes.R"))
 ```
 
@@ -982,6 +985,8 @@ $$
 ```{r}
 #| label: fit-coeff-demographic-model-test
 
+set.seed(603)
+
 source(here("source", "14_fit_demographic_model_test.R"))
 ```
 
@@ -1004,13 +1009,13 @@ coeff_plots
 
 First, we set up the design matrix and penalty matrices, which are the same for each basis coefficient. We currently use 10 knots for each suture fusion-specific smooth. Therefore, the design matrix currently includes 2 parametric covariates (1 intercept and 1 Sex indicator), 9 basis functions for a reference smooth, and $9 * 5 = 45$ basis functions for the smooths associated with Sagittal, Metopic, Left Coronal, Right Coronal, and Bicoronal. In total, the design matrix $\bW$ is $n \times Q$, where $Q = 56$.
 
-Note that these smooths account for an identifiability constraint. Since we are including multiple basis expansions, each covariate in the smooths needs to sum to zero. In practice, this leads us to subtract the column mean from each column of the design matrix, which reduces the rank of each smooth's columns by 1. Therefore, though we use 10 knots for each smooth, we only keep 9 columns.
+*TO UPDATE: Note that these smooths account for an identifiability constraint. Since we are including multiple basis expansions, each covariate in the smooths needs to sum to zero. In practice, this leads us to subtract the column mean from each column of the design matrix, which reduces the rank of each smooth's columns by 1. Therefore, though we use 10 knots for each smooth, we only keep 9 columns.*
 
 We set up the design matrix and the penalty matrices to match the Gibbs sampler function we have already written to fit a penalized linear regression model, which in turn matches the penalty matrices in `mgcv`. Therefore, each penalty matrix is $Q \times Q$ and block-diagonal, with one $9 \times 9$ penalty matrix included and the remainder of the matrix left as 0.
 
 First, we construct a full "reference" matrix and penalty matrix using `mgcv::smooth.construct2`.
 
-Second, we write functionss that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
+Second, we write functions that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
 
 ## Single Basis Coefficient Bayesian Additive Model {#sec-coeff-gibbs}
 
@@ -1433,7 +1438,7 @@ $$
 \end{alignat*}
 $$
 
-## Combined Model Simulation {#sec-joint-model-sim}
+## Combined Model Fit {#sec-joint-model-fit}
 
 ```{r}
 #| results: hide
@@ -1444,8 +1449,14 @@ gc(verbose = F)
 ```
 
 ```{r}
-#| label: bayesian-hierarchical-gibbs-sim
+#| label: bayesian-hierarchical-gibbs
 
+set.seed(617)
+
+source(here("source", "15_run_gibbs_sampler.R"))
+```
+
+```{r}
 
 ```
 

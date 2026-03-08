@@ -27,8 +27,6 @@ def_pars <- c(
 # Set iterations
 bayes_soap_iters <- 1e3
 
-set.seed(70)
-
 # Run function
 soap_bayes1 <- lm_penalized_gibbs(
   y = y_mx, X = so_X, S = S_mx,
@@ -56,7 +54,7 @@ soap_bayes1_tr <- imap(
     list_modify("timing" = zap(),
                 "start-stop" = zap()),
   function(x, xn){
-    x <- as_tibble(x)
+    x <- as_tibble(x, .name_repair = "unique")
     if(ncol(x) == 1){
       names(x) <- xn
     } else {
@@ -74,7 +72,7 @@ soap_bayes1_tr <- imap(
   unname() %>%
   list_rbind() %>%
   mutate(draw_cat = if_else(draw == "burn_",
-                            "Burn-In", "Posterior"))
+                            "Burn-In", "Post-Burn-In"))
 
 # Add default parameters to this table
 trace_default <- soap_bayes1_tr %>%
