@@ -107,21 +107,21 @@ pacman::p_load(
   
   # Format
   latex2exp, table1, gtsummary,
-  broom.helpers, broom.mixed, colorspace,
+  broom.helpers, broom.mixed, colorspace, gtsummary,
   
   # Modeling
   mgcv,
   
   # Useful extensions
-  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS,
+  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS, ggh4x,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
   knitr, kableExtra, ggpubr, ggpmisc, here
 )
 
-# Load my Rcpp functions
-library(DevCranio)
+# # Load my Rcpp functions
+# library(DevCranio)
 
 # Load my R functions
 source(here("source", "load_matrix_data_fn.R"))
@@ -163,7 +163,60 @@ fusion_models <- readRDS(
 # Load soap film object
 load(file = here::here("analysis", "intermediate", "soap_object.rda"))
 
+## Load most recent simulation results
+
+# Load individuals we're fitting simulations on (demo_test_df)
+load(file = here::here("analysis", "intermediate",
+                         paste0("simulation_demographics.rda")))
+
+
+sim_date <- "2026-03-13"
+
+# Output from the most recent Gibbs sampler (hierarchy_test)
+load(file = here::here("analysis", "intermediate",
+                       paste0("hierachical_test_",
+                              sim_date, 
+                              ".rda")))
+
+# True values from the same day (demo_effect_Mx, gamma_true)
+load(file = here::here("analysis", "intermediate",
+                       paste0("hierachical_test_true_vals_",
+                              sim_date, 
+                              ".rda")))
+
+# Load joint model run (cranio_joint)
+load(file = here::here("analysis", "intermediate", "joint_model_fit.rda"))
+
+# Load region object (matrix_region)
+load(file = here::here("analysis", "intermediate", "region_shape_object.rda"))
+
+# Load covariates components of data (cranio_coeff_ingredients)
+load(file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
+
 ```
+
+```{r}
+#| label: constants
+
+# Set maximum age as 3 years old
+cranio_max_age <- 365
+
+# Set age categories
+cranio_age_breaks <- c(seq(0, 300, 60), cranio_max_age)
+
+# Label these with spaces so they can wrap in plots
+cranio_age_break_labels <- map_chr(2:length(cranio_age_breaks),
+                            ~paste0(cranio_age_breaks[.-1],
+                                    " - ",
+                                    if_else(. == length(cranio_age_breaks), "", "<"),
+                                    cranio_age_breaks[.]))
+
+# Set consistent colors for every time fusions pop up
+fusion_color_dict <- distinct(cranio_sub, fusion_type) %>%
+  arrange(fusion_type) %>%
+  mutate(color = palette.colors(palette = "Set1")[c(1:5, 7)])
+```
+
 
 # Introduction
 
@@ -173,14 +226,14 @@ load(file = here::here("analysis", "intermediate", "soap_object.rda"))
 #| label: table1
 
 cranio_sub %<>%
-  mutate(sex = fct_recode(sex, "Female" = "0", "Male" = "1"))
+  mutate(sex_name = fct_recode(sex, "Female" = "0", "Male" = "1"))
 
 t1 <- tbl_summary(cranio_sub, 
-                  include = c(age, sex), 
+                  include = c(age, sex_name), 
                   by = fusion_type,
                   label = list(
                     age ~ "Age (Days)",
-                    sex ~ "Sex"
+                    sex_name ~ "Sex"
                   ),
                   type = list(
                     all_continuous() ~ "continuous2"),
@@ -232,24 +285,6 @@ ggsave("../results/2026 ENAR Figures/fusion_norm_average.png",
 ```{r}
 #| label: fusion age
 
-# Set maximum age as 3 years old
-cranio_max_age <- 365 * 3
-
-# Set age categories
-age_breaks <- c(0, 61, 122, 183, 366, cranio_max_age)
-
-# Label these with spaces so they can wrap in plots
-age_break_labels <- map_chr(2:length(age_breaks),
-                            ~paste0(age_breaks[.-1],
-                                    " - ",
-                                    if_else(. == length(age_breaks), "", "<"),
-                                    age_breaks[.]))
-
-# Set consistent colors for every time fusions pop up
-fusion_color_dict <- distinct(cranio_sub, fusion_type) %>%
-  arrange(fusion_type) %>%
-  mutate(color = palette.colors(palette = "Set1")[1:6])
-
 # Summarize by age, region, and fusion type; have option to round to nearest month
 # Create dataset with fusion and age info
 matrix_age_fusion <- cranio_matrix %>%
@@ -258,26 +293,33 @@ matrix_age_fusion <- cranio_matrix %>%
   unnest_longer(col = c(fusion_type, age, diff)) %>%
   # Add age categories
   mutate(age_bin = cut(age,
-                       breaks = age_breaks, labels = age_break_labels,
+                       breaks = cranio_age_breaks,
+                       labels = cranio_age_break_labels,
                        right = FALSE, include.lowest = T)) %>%
   # Summarize average in these bins
   group_by(row, col, fusion_type, age_bin) %>%
   summarize(diff_avg = mean(diff)) %>%
-  ungroup()
+  ungroup() %>% 
+  # Add binned age label
+  mutate(age_bin_header = "Age (Days)")
 
 # Plot brain map by fusion type and age
 plot_fusion_age <- ggplot(matrix_age_fusion %>% 
                             filter(fusion_type %in% c("Normative", "Sagittal"))) +
   geom_raster(aes(x = row, y = col, fill = diff_avg)) +
-  facet_grid(fusion_type ~ age_bin,
-             labeller = label_wrap_gen(width = 10)) +
+  facet_nested(fusion_type ~ age_bin_header + age_bin,
+               labeller = label_wrap_gen(),
+               nest_line = element_line(linetype = 3),
+               resect = unit(0.2, "cm")) +
   coord_fixed() +
   scale_fill_viridis_c(option = "turbo") +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
   labs(fill = "Avg. Growth") +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom",
+        strip.text.x = element_text(size = 10, 
+                                    margin = margin(t = 2, b = 3)))
 
 ggsave("../results/2026 ENAR Figures/fusion_age_average.png",
        plot_fusion_age,
@@ -318,12 +360,12 @@ newdata_fusiongam <- tibble(
   fused_RCoronal = 0,
   fused_LCoronal = 0,
   sex = 0,
-  age = 365,
-  row = list(seq(from = (min(cranio_bound_matrix$row) - 30),
-                 to = (max(cranio_bound_matrix$row) + 30),
+  age = 300,
+  row = list(seq(from = (min(cranio_bound_matrix$row) - 10),
+                 to = (max(cranio_bound_matrix$row) + 10),
                  length.out = 50)),
-  col = list(seq(from = (min(cranio_bound_matrix$col) - 30),
-                 to = (max(cranio_bound_matrix$col) + 30),
+  col = list(seq(from = (min(cranio_bound_matrix$col) - 10),
+                 to = (max(cranio_bound_matrix$col) + 10),
                  length.out = 50))
 ) %>%
   unnest_longer(row) %>% unnest_longer(col)
@@ -345,12 +387,13 @@ plot_model_fusion <- ggplot() +
               aes(x = row, y = col, fill = fit)) +
   geom_sf(data = cranio_bound_shape, fill = NA, linewidth = 1) +
   facet_wrap(~fusion_type, nrow = 1) +
-  scale_fill_viridis_c(option = "turbo") +
-  scale_alpha(range = c(0.5, 1), guide = "none") +
+  scale_fill_viridis_c(option = "turbo",
+                       limits = quantile(fusion_model_summ$fit, 
+                                         c(0.01, 0.99))) +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
-  labs(fill = "Pred. Growth\n(1 y.o. F)") +
+  labs(fill = "Pred. Growth\n(10 mo. F)") +
   theme(legend.position = "bottom")
 
 plot_model_fusion
@@ -458,11 +501,11 @@ soap_basis_bd <- ggplot() +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~basis_fn, ncol = 2)
+  facet_wrap(~basis_fn, nrow = 1)
 
 ggsave("../results/2026 ENAR Figures/basis_boundary.png",
        soap_basis_bd,
-       height = 6, width = 3, units = "in")
+       height = 2, width = 8, units = "in")
 
 # Plot interior basis functions with corresponding knots
 soap_basis_int <- ggplot() +
@@ -479,11 +522,11 @@ soap_basis_int <- ggplot() +
   coord_fixed() +
   theme_void() +
   theme(legend.position = "bottom") +
-  facet_wrap(~basis_fn, ncol = 1)
+  facet_wrap(~basis_fn, nrow = 1)
 
 ggsave("../results/2026 ENAR Figures/basis_interior.png",
        soap_basis_int,
-       height = 6, width = 3, units = "in")
+       height = 3, width = 6, units = "in")
 ```
 
 # Results
@@ -492,20 +535,6 @@ ggsave("../results/2026 ENAR Figures/basis_interior.png",
 
 ```{r}
 #| label: simulation object
-
-sim_date <- "2026-03-02"
-
-# Output from the most recent Gibbs sampler (hierarchy_test)
-load(file = here::here("analysis", "intermediate",
-                       paste0("hierachical_test_",
-                              sim_date, 
-                              ".rda")))
-
-# True values from the same day
-load(file = here::here("analysis", "intermediate",
-                       paste0("hierachical_test_true_vals_",
-                              sim_date, 
-                              ".rda")))
 
 # Identify sample of gammas to plot
 gammas_to_check <- c(1:2, 6:7, 48:49, 64:65)
@@ -572,9 +601,6 @@ ggsave("../results/2026 ENAR Figures/beta_curves_simulated.png",
 ```{r}
 #| label: gamma scatter
 
-# Load actual individuals we're fitting data on (demo_test_df)
-load(file = here::here("analysis", "intermediate",
-                         paste0("simulation_demographics.rda")))
 
 # Take posterior mean of gammas
 gamma_post <- apply(hierarchy_test$gamma, c(1,2), mean)
@@ -610,6 +636,190 @@ gamma_scatter
 ggsave("../results/2026 ENAR Figures/gamma_simulated.png",
        gamma_scatter,
        height = 5, width = 6, units = "in")
+
+```
+
+## Actual Data Visualization
+
+```{r}
+#| label: load real data objects
+
+# Find nearest point in image data to each region's centroid
+mx_pt_shape <- st_as_sf(so_matrix_pts, coords = c("row", "col"))
+
+sample_points <- st_nearest_feature(matrix_region$centroid, mx_pt_shape)
+
+# Plot points on the shape
+plot_sample <- ggplot() +
+  geom_sf(data = matrix_region) +
+  geom_sf(data = mx_pt_shape[sample_points,], color = "red") +
+  geom_sf_text(data = matrix_region %>% st_drop_geometry(), 
+               aes(label = region, geometry = centroid),
+               nudge_x = -10, nudge_y = 10) +
+  theme_void()
+
+ggsave("../results/2026 ENAR Figures/sample_point_plots.png",
+       plot_sample,
+       height = 5, width = 3, units = "in")
+```
+
+```{r}
+#| label: plot joint model patterns
+
+## Generate sample data
+joint_newdata <- cranio_sub %>%
+  mutate(min_age = min(age),
+         max_age = max(age)) %>%
+  distinct(fusion_type, min_age, max_age) %>%
+  rowwise() %>%
+  mutate(age = list(seq(min_age, max_age, by = 10))) %>%
+  ungroup() %>%
+  select(-c(min_age, max_age)) %>%
+  mutate(sex = 0) %>%
+  unnest(age) %>%
+  mutate(sex = factor(sex, levels = levels(cranio_sub$sex)),
+         fusion_type = factor(fusion_type, levels = levels(cranio_sub$fusion_type)))
+
+# Convert sample data to design matrix
+# Create predictions by fusion type
+joint_new_X_list <- map(cranio_coeff_ingredients$smooth,
+                        ~PredictMat(.x, data = joint_newdata))
+
+# Combine to create Normative and add unpenalized terms
+joint_new_design <- Reduce(
+  "cbind", c(
+    list(
+      model.matrix(~sex + fusion_type, data = joint_newdata),
+      Reduce("+", joint_new_X_list)),
+    joint_new_X_list[-1]
+  ))
+
+## Calculate estimated gammas for this sample data from posterior betas
+joint_new_gammas <- apply(cranio_joint$beta, 3,
+                          function(x){ joint_new_design %*% x}, simplify = F)
+
+## Calculate estimated outcomes from these estimated gammas
+
+# Extract the design matrix for the sample points we've identified
+basis_sample <- cranio_soap$X[sample_points,]
+
+# Calculate estimated outcomes for each set of estimated gammas
+joint_outcomes_new <- simplify2array(
+  map(joint_new_gammas, ~tcrossprod(.x, basis_sample)))
+
+# Take mean and 95% credible interval(?) from these estimates
+joint_outcomes_est <- apply(joint_outcomes_new, c(1, 2),
+                            FUN = function(x) matrix(
+                              c(mean(x),
+                                quantile(x, 0.05),
+                                quantile(x, 0.95)),
+                              nrow = 1
+                            ))
+
+# Reshape estimates
+joint_outcomes_df <- joint_outcomes_est %>%
+  reshape2::melt() %>%
+  rename(metric = Var1,
+         row_num = Var2,
+         region_num = Var3,
+         estimate = value) %>%
+  mutate(metric = case_match(metric,
+                             1 ~ "mean",
+                             2 ~ "pct05",
+                             3 ~ "pct95"))
+
+# Merge to interpretable data
+joint_newdata_est <- joint_newdata %>%
+  mutate(row_num = 1:n()) %>%
+  left_join(joint_outcomes_df)
+
+# Add scale for alpha
+fusion_color_dict %<>%
+  mutate(alpha = if_else(fusion_type == "Normative", 1, 0.5))
+
+# Create plots of mean predictions
+joint_estimates_plot <- ggplot(joint_newdata_est %>%
+                                 filter(metric == "mean" &
+                                          !str_detect(fusion_type, "oronal")),
+                               aes(x = age, y = estimate,
+                                   color = fusion_type)) +
+  geom_line() +
+  facet_wrap(~factor(region_num, 
+                     levels = c(1:4, 12, 11, 6, 5, 10, 9, 8, 7)),
+             ncol = 4, scales = "free_y") +
+  scale_color_manual(values = fusion_color_dict %>%
+                       select(fusion_type, color) %>%
+                       deframe()) +
+  theme_minimal() +
+  theme(legend.position = "bottom") +
+  labs(x = "Age (Days)",
+       y = "Estimated Growth",
+       color = "Fusion Type")
+
+ggsave("../results/2026 ENAR Figures/joint_regional_paths.png",
+       joint_estimates_plot,
+       height = 6, width = 8, units = "in")
+```
+
+```{r}
+#| label: create plots of full surface expansion
+
+# Filter to a subset of sample individuals at interpretable ages
+joint_surface_data <- joint_newdata %>% 
+  mutate(row_num = row_number()) %>% 
+  filter(age %in% seq(30, 330, 60))
+
+# Extract gammas specific to these individuals
+joint_surface_gammas <- map(joint_new_gammas,
+                            function(x) x[joint_surface_data$row_num,])
+
+joint_gammas_surface_mean <- Reduce("+", joint_surface_gammas) / length(joint_surface_gammas)
+
+# Calculate estimated outcomes for each set of estimated gammas
+joint_outcomes_surface <- tcrossprod(joint_gammas_surface_mean, cranio_soap$X)
+
+# Convert to DF and merge in relevant info
+joint_outcomes_surface_df <- reshape2::melt(joint_outcomes_surface) %>% 
+  rename(row_num = Var1, cell_num = Var2) %>% 
+  left_join(joint_surface_data) %>% 
+  left_join(so_matrix_pts %>% mutate(cell_num = row_number())) %>% 
+  mutate(age_header = "Age (Days)")
+
+# Plot outcomes by suture fusion and age
+outcomes_plot_sag <- ggplot(joint_outcomes_surface_df %>% 
+                            filter(fusion_type %in% c("Normative", "Sagittal"))) +
+  geom_raster(aes(x = row, y = col, fill = value)) +
+  facet_nested(fusion_type ~ age_header + age,
+               nest_line = element_line(linetype = 3)) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "Est. Growth") +
+  theme(legend.position = "bottom",
+        strip.text.x = element_text(size = 10, 
+                                    margin = margin(t = 2, b = 3)))
+
+outcomes_plot_sag
+
+outcomes_plot <- ggplot(joint_outcomes_surface_df) +
+  geom_raster(aes(x = row, y = col, fill = value)) +
+  facet_nested(fusion_type ~ age_header + age,
+               nest_line = element_line(linetype = 3)) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "Est. Growth") +
+  theme(legend.position = "bottom",
+        strip.text.x = element_text(size = 10, 
+                                    margin = margin(t = 2, b = 3)))
+
+ggsave("../results/2026 ENAR Figures/joint_sagittal_surface.png",
+       outcomes_plot_sag,
+       height = 3, width = 6, units = "in")
 
 ```
 

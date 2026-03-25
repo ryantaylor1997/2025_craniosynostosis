@@ -53,16 +53,6 @@ plot_fusion <- ggplot(matrix_fusion) +
 
 ### Investigate age
 
-# Define age category cutoffs
-age_breaks <- c(0, 61, 122, 183, 366, cranio_max_age)
-
-# Label these with spaces so they can wrap in plots
-age_break_labels <- map_chr(2:length(age_breaks),
-                            ~paste0(age_breaks[.-1],
-                                    " - ",
-                                    if_else(. == length(age_breaks), "", "<"),
-                                    age_breaks[.]))
-
 # Create dataset with fusion and age info
 matrix_age_fusion <- cranio_matrix %>%
   hoist(data, "fusion_type", "age", "diff") %>%
@@ -70,7 +60,8 @@ matrix_age_fusion <- cranio_matrix %>%
   unnest_longer(col = c(fusion_type, age, diff)) %>%
   # Add age categories
   mutate(age_bin = cut(age,
-                       breaks = age_breaks, labels = age_break_labels,
+                       breaks = cranio_age_breaks,
+                       labels = cranio_age_break_labels,
                        right = FALSE, include.lowest = T)) %>%
   # Summarize average in these bins
   group_by(row, col, fusion_type, age_bin) %>%
@@ -96,7 +87,8 @@ plot_fusion_age <- ggplot(matrix_age_fusion) +
 # Count images per fusion and age bin
 size_fusion_age <- cranio_sub %>%
   mutate(age_bin = cut(age,
-                       breaks = age_breaks, labels = age_break_labels,
+                       breaks = cranio_age_breaks,
+                       labels = cranio_age_break_labels,
                        right = FALSE, include.lowest = T)) %>%
   group_by(fusion_type, age_bin) %>%
   summarize(n = n()) %>%

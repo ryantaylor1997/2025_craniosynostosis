@@ -133,7 +133,7 @@ age_plot <- ggplot(cranio) +
                           y =  fusion_type,
                           fill = fusion_type)) +
   scale_fill_discrete(guide = "none",
-                      palette = fusion_color_dict$fusion_color) +
+                      palette = fusion_color_dict$color) +
   labs(x = "Age (Days)", y = "Fusion Type")
 
 # Summarize densities
@@ -145,10 +145,7 @@ have_fusions_quant <- have_fusions %$%
   enframe(name = "Percentile (with Fusions)", value = "Age") %>%
   mutate(Years = Age / 365.25)
 
-# Set maximum age as 3 years old
-cranio_max_age <- 365 * 3
-
-# Determine what percentile this corresponds to among patients with fusion
+# Determine what percentile is our preset max age among patients with fusion
 max_age_summ <- tibble("Age Cap" = cranio_max_age,
                        "Percentile" = mean(have_fusions$age <= cranio_max_age))
 
@@ -175,10 +172,6 @@ cranio_sub <- cranio %>%
   # Make sex variable categorical; drop unused fusion types
   mutate(sex = factor(sex),
          fusion_type = fct_drop(fusion_type))
-
-saveRDS(cranio_sub,
-        file = here::here("analysis", "intermediate",
-                          "demographics_filtered.rds"))
 
 # Summarize Fusion Types --------------------------------------------------
 

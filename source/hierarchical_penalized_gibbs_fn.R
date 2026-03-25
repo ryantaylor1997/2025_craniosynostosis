@@ -108,8 +108,8 @@ hierarchical_penalized_gibbs <- function(
   ## Assign initial values
 
   # Coefficients
-  gamma <- rep_len(gamma0, N*K)
-  beta <- rep_len(beta0, Q*K)
+  gamma_vec <- rep_len(gamma0, N*K)
+  beta_vec <- rep_len(beta0, Q*K)
 
   # Data and soap film parameters
   sigmasq <- sigmasq0
@@ -123,30 +123,39 @@ hierarchical_penalized_gibbs <- function(
   a_alpha_pri <- rep_len(a_alpha_pri, num_penals_demo)
   b_alpha_pri <- rep_len(b_alpha_pri, num_penals_demo)
 
-  # Initialize gamma and beta moments before update
-  gamma_expect <- gamma
-  gamma_var <- Diagonal(N*K)
-  basis_sq_plus_pen <- Diagonal(N*K)
-
-  beta_expect <- beta
-  beta_var <- Diagonal(Q*K)
-
   # Compute hyperparameters that don't update (gamma / Igamma shapes)
   a_sigma_post <- a_sigma_pri + N*M/2 + N*K/2
   a_gamma_post <- a_gamma_pri + N*pen_block_dims_basis/2
   a_tau_post <- a_tau_pri + Q*K/2
   a_alpha_post <- a_alpha_pri + K*pen_block_dims_demo/2
 
+  ### Allocate storage
+
+  # Matrix forms of parameters
+  gamma_mx <- Matrix(gamma_vec, N, K)
+  beta_mx <- Matrix(beta_vec, Q, K)
+
+  # Initialize gamma and beta moments before update
+  gamma_expect <- gamma_mx
+  gamma_i_var <- Diagonal(K)
+  basis_sq_plus_pen <- Diagonal(K)
+
+  beta_expect <- beta_mx
+  beta_var <- Diagonal(Q*K)
+
+  # List of gamma row vector draws
+  gamma_ls <- rep(list(rep(0, K)), N)
+
+  # Vectors of sums of products
+  gamma_sq_ls <- gamma_x_outcome_ls <- rep(0, N)
+  beta_sq_ls <- rep(0, K)
+
   ### Data manipulations
 
-  # Allocate storage for versions of gamma and beta in matrix form
-  gamma_mx <- Matrix(gamma, N, K)
-  beta_mx <- Matrix(beta, Q, K)
-
   # Allocate storage for subsets of these coefficients in lambda updates
-  gamma_mx_list <- map(pen_block_cols_basis, ~gamma_mx[, .x])
-  beta_mx_basis_list <- map(pen_block_cols_basis, ~beta_mx[, .x])
-  beta_mx_demo_list <- map(pen_block_cols_demo, ~beta_mx[.x, ])
+  gamma_mx_list <- map(pen_block_cols_basis, ~gamma_mx[, .x, drop = F])
+  beta_mx_basis_list <- map(pen_block_cols_basis, ~beta_mx[, .x, drop = F])
+  beta_mx_demo_list <- map(pen_block_cols_demo, ~beta_mx[.x, , drop = F])
 
   # Convert outcome matrix to vector
   outcome_vec <- as(outcome_mx, "sparseVector")
@@ -160,12 +169,10 @@ hierarchical_penalized_gibbs <- function(
   # Calculate Demographic matrix squared
   demo_sq <- crossprod(demo_mx)
 
-  # Calculate basis kron I_N and basis transpose kron I_N
-  basis_kron <- kronecker(basis_mx, Diagonal(N))
-  basis_t_kron <- kronecker(t(basis_mx), Diagonal(N))
+  ### Allocate storage
 
-  # Calculate I_K kron demographic
-  demo_kron <- kronecker(Diagonal(K), demo_mx)
+  # List of gamma row vector draws
+  gamma_ls <- rep(list(rep(0, K)), N)
 
   ### Create objects to save output
 
@@ -243,15 +250,12 @@ hierarchical_penalized_gibbs <- function(
 
     basis_sq_plus_pen_inv <- solve(basis_sq_plus_pen)
 
-    basis_sq_plus_pen_inv_kron <- kronecker(basis_sq_plus_pen_inv, Diagonal(N))
-
-    pen_basis_kron_demo <- kronecker(pen_basis_total, demo_mx)
-
     ## Compute expectation and variance
-    gamma_expect <- basis_sq_plus_pen_inv_kron %*%
-      (basis_t_kron %*% outcome_vec + pen_basis_kron_demo %*% beta)
+    gamma_expect <- (outcome_mx %*% basis_mx +
+                       demo_mx %*% beta_mx %*% pen_basis_total) %*%
+      basis_sq_plus_pen_inv
 
-    gamma_var <- sigmasq * basis_sq_plus_pen_inv_kron
+    gamma_i_var <- sigmasq * basis_sq_plus_pen_inv
 
     timer["gamma_update"] <- timer["gamma_update"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -260,12 +264,14 @@ hierarchical_penalized_gibbs <- function(
     ## Gamma draw
 
     # Use custom function to perform Cholesky decomposition on sparse Matrix
-    gamma <- t(rmvnorm_Matrix(n = 1, gamma_expect, gamma_var))
+    gamma_mx <- rmvnorm_Matrix(n = N,
+                               mean = gamma_expect,
+                               sigma = gamma_i_var)
 
     # ### *** DRAFT *** : Set Gammas to fixed value
-    # gamma <- Matrix(as(gamma_true, "sparseVector"), N*K, 1)
+    # gamma_mx <- Matrix(gamma_true)
 
-    gamma_mx <- Matrix(as(gamma, "sparseVector"), N, K, byrow = F)
+    gamma_vec <- as(gamma_mx, "sparseVector")
 
     timer["gamma_draw"] <- timer["gamma_draw"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -290,7 +296,7 @@ hierarchical_penalized_gibbs <- function(
     ## Compute expectation and variance
     beta_expect <- penalties_kron_inv %*%
       pen_basis_kron_demo_t %*%
-      gamma
+      gamma_vec
 
     beta_var <- sigmasq * penalties_kron_inv
 
@@ -299,12 +305,12 @@ hierarchical_penalized_gibbs <- function(
     time_check <- Sys.time()
 
     ## Generate new beta sample
-    beta <- t(rmvnorm_Matrix(n = 1, beta_expect, beta_var))
+    beta_vec <- t(rmvnorm_Matrix(n = 1, beta_expect, beta_var))
 
     # ### *** DRAFT *** : Set Betas to fixed value
-    # beta <- Matrix(as(demo_effect_mx, "sparseVector"), Q*K, 1)
+    # beta_vec <- Matrix(as(demo_effect_mx, "sparseVector"), Q*K, 1)
 
-    beta_mx <- Matrix(as(beta, "sparseVector"), Q, K, byrow = F)
+    beta_mx <- Matrix(as(beta_vec, "sparseVector"), Q, K, byrow = F)
 
     timer["beta_draw"] <- timer["beta_draw"] +
       difftime(Sys.time(), time_check, units = "secs")
@@ -312,15 +318,35 @@ hierarchical_penalized_gibbs <- function(
 
     ### (3) Update sigma^2 (residual variance)
 
+    # Take "square" for each gamma row
+    gamma_sq_ls <- map(
+      1:N,
+      ~gamma_mx[.x, , drop = F] %*%
+        tcrossprod(basis_sq_plus_pen, gamma_mx[.x, , drop = F])
+    )
+
+    # Take cross products of gamma and outcome
+    gamma_x_outcome_ls <- map(
+      1:N,
+      ~tcrossprod(
+        tcrossprod(gamma_mx[.x, , drop = F], basis_mx),
+        outcome_mx[.x, , drop = F]
+        )
+    )
+
     # 2nd parameter of inverse gamma
-    b_sigma_post <-
-      b_sigma_pri + 0.5 * (
+    b_sigma_post <- b_sigma_pri +
+      0.5 * (
         outcome_vec_sq +
-          crossprod(gamma, kronecker(basis_sq_plus_pen, Diagonal(N)) ) %*% gamma +
-          crossprod(beta, pen_basis_kron_demo_sq) %*% beta
+          Reduce("+", gamma_sq_ls) +
+          crossprod(beta_vec,
+                    as(demo_sq %*% beta_mx %*% pen_basis_total,
+                       "sparseVector"))
       ) -
-      crossprod(gamma, basis_t_kron) %*% outcome_vec -
-      crossprod(beta, pen_basis_kron_demo_t) %*% gamma
+      Reduce("+", gamma_x_outcome_ls) -
+      crossprod(beta_vec,
+                as(crossprod(demo_mx, gamma_mx) %*% pen_basis_total,
+                   "sparseVector"))
 
     b_sigma_post <- b_sigma_post[1,1]
 
@@ -337,9 +363,15 @@ hierarchical_penalized_gibbs <- function(
 
     ### (4) Update tau^2 (demographic effect scale)
 
+    # Take "square" of each column of beta matrix
+    beta_sq_ls <- map(
+      1:K,
+      ~crossprod(beta_mx[,.x], pen_demo_total) %*% beta_mx[,.x]
+    )
+
     # Second parameter of inverse gamma
     b_tau_post <- b_tau_pri +
-      0.5 * crossprod(beta, kronecker(Diagonal(K), pen_demo_total) ) %*% beta
+      0.5 * Reduce("+", beta_sq_ls)
 
     b_tau_post <- b_tau_post[1,1]
 
@@ -357,33 +389,33 @@ hierarchical_penalized_gibbs <- function(
     ### (5) Update lambdas for soap film (spatial smoothness factors)
 
     # Update lists of parameter matrices separated into soap film-based blocks
-    gamma_mx_list <- map(pen_block_cols_basis, ~gamma_mx[, .x])
-    beta_mx_basis_list <- map(pen_block_cols_basis, ~beta_mx[, .x])
+    gamma_mx_list <- map(pen_block_cols_basis, ~gamma_mx[, .x, drop = F])
+    beta_mx_basis_list <- map(pen_block_cols_basis, ~beta_mx[, .x, drop = F])
 
     # Calculate posterior gamma shape
     b_gamma_post <- pmap(
       list(
         b_gamma_pri,
         gamma_mx_list,
-        pen_block_dims_basis,
         beta_mx_basis_list,
         pen_block_list_basis
       ),
-      function(b_pri, gamma_block, pen_block_dim, beta_block, pen_block){
+      function(b_pri, gamma_block, beta_block, pen_block){
 
-        # Vectorize gamma and beta block matrices
-        dim(gamma_block) <- c(prod(dim(gamma_block)), 1)
-        dim(beta_block) <- c(prod(dim(beta_block)), 1)
-
-        # Isolate demographic Kronecker product the size of the block
-        demo_kron_block <- kronecker(Diagonal(pen_block_dim), demo_mx)
-
-        # Subtract chunk of demographic effects from chunk of gammas
-        block_vec <- gamma_block - demo_kron_block %*% beta_block
+        # Subtract row-wise means for update
+        gamma_block_vec_ls <- map(
+          1:N,
+          ~gamma_block[.x, , drop = F] - demo_mx[.x, , drop = F] %*% beta_block
+        )
 
         b_post <- b_pri +
-        (1 / (2 * sigmasq)) *
-          crossprod(block_vec, kronecker(pen_block, Diagonal(N))) %*% block_vec
+          (1 / (2 * sigmasq)) *
+          Reduce("+",
+                 map(
+                   gamma_block_vec_ls,
+                   ~.x %*% tcrossprod(pen_block, .x, drop = F)
+                 )
+          )
 
         return(b_post[1,1])
       })
@@ -405,27 +437,25 @@ hierarchical_penalized_gibbs <- function(
     ### (6) Update lambda(s) for demographic effects (demographic smoothness factors)
 
     # Update list of demographic effects in penalized and unpenalized blocks
-    beta_mx_demo_list <- map(pen_block_cols_demo, ~beta_mx[.x, ])
+    beta_mx_demo_list <- map(pen_block_cols_demo, ~beta_mx[.x, , drop = F])
 
     # Calculate posterior gamma shape
     b_alpha_post <- pmap(
       list(
         b_alpha_pri,
         beta_mx_demo_list,
-        pen_block_dims_demo,
         pen_block_list_demo
       ),
-      function(b_pri, beta_block, pen_block_dim, pen_block){
-
-        # Vectorize beta block tranpose matrices
-        beta_block_t <- t(beta_block)
-        dim(beta_block_t) <- c(prod(dim(beta_block_t)), 1)
+      function(b_pri, beta_block, pen_block){
 
         b_post <- b_pri +
           (1 / (2 * tausq)) *
-          crossprod(beta_block_t,
-                    kronecker(pen_block, Diagonal(K))) %*%
-          beta_block_t
+          Reduce("+",
+                 map(
+                   1:K,
+                   ~tcrossprod(beta_block[,.x], pen_block) %*% beta_block[,.x]
+                 )
+          )
 
         return(b_post[1,1])
       })

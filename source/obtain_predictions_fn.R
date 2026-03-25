@@ -10,7 +10,7 @@ obtain_predictions <- function(model, newdata,
 
   # Find the columns for effects we want to remove
   rm_cols <- map(rm_effects,
-                 ~grepv(., colnames(nd_mat), fixed = T)) %>%
+                 ~grep(., colnames(nd_mat), fixed = T, value = T)) %>%
     unlist() %>% unique()
 
   # For these columns, set (linear predictor) columns to 0

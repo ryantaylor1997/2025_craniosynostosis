@@ -112,7 +112,7 @@ pacman::p_load(
   mgcv,
   
   # Useful extensions
-  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS,
+  gtools, readxl, reshape2, ggridges, Matrix, MASS, ggh4x,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
@@ -161,8 +161,21 @@ MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
 # Define number of knots along each dimension of soap film
 so_GRID_N <- 10
 
-# Define number of knots along age effecet
+# Define number of knots along age effect
 cranio_knots_age <- 10
+
+# Define maximum age
+cranio_max_age <- 365
+
+# Define age category cutoffs
+cranio_age_breaks <- c(seq(0, 300, 60), cranio_max_age)
+
+# Label these with spaces so they can wrap in plots
+cranio_age_break_labels <- map_chr(2:length(cranio_age_breaks),
+                            ~paste0(cranio_age_breaks[.-1],
+                                    " - ",
+                                    if_else(. == length(cranio_age_breaks), "", "<"),
+                                    cranio_age_breaks[.]))
 
 # Use data set to merge in fusion variables for regressions
 fusion_dict <- tibble(
@@ -185,8 +198,6 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 -   Wrote function to simulate data based on our model
 -   Updated Gibbs function to use `Matrix` package and avoid memory issues with Kronecker products
-
-
 
 ## Questions
 
@@ -323,6 +334,8 @@ Next, we load the malformation maps into one data set. Each malformation map is 
 #| label: load-matrix-files
 
 # Toggle whether to create matrix data
+
+# NB: filtering matrix also involves identifying duplicates in covariates
 if(DO_LOAD_MATRICES & DO_FILTER_MATRICES){
   
   source(here("source", "03_load_Matrix_data.R"))
@@ -335,13 +348,15 @@ if(DO_LOAD_MATRICES & DO_FILTER_MATRICES){
   
   source(here("source", "04_filter_matrix_data.R"))
   
+  cranio_matrix <- cranio_matrix_sub
+  
 } else {
   cranio_matrix <- readRDS(file = here::here("analysis", "intermediate", 
                                              "covars_and_matrices_sub.rds"))
+  
+  cranio_sub <- readRDS(file = here::here("analysis", "intermediate",
+                                          "demographics_filtered.rds"))
 }
-
-# Identify duplicate data
-source(here("source", "check_matrix_duplicates.R"))
 ```
 
 ### Data Subset {#sec-subset-data}
@@ -523,6 +538,10 @@ Next, for a preliminary spatial model, we split the data only by fusion type. Ba
 
 ```{r}
 #| label: gam-2d-models
+
+# Clear memory space
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 
 source(here("source", "08_prelim_models_2dGAM.R"))
 ```
@@ -1173,24 +1192,24 @@ At this level, we have modeled each individual image's spatial pattern across $\
 
 In our case, it is not appropriate to model $\gamma_{ik}$ as a linear function of the demographics $\bU_i$. Instead, we will model $\gamma_{ik}$ as a linear function of some untransformed covariates as well as a second spline expansion over Age, separated by suture fusion type. To make our model general enough to accomodate any linear combination of nonlinear functions of covariates $\bU_i$, let $\bW$ be the $N \times Q$ matrix containing untransformed covariates as well as realizations of basis spline expansions.
 
-Suppose that there are $Q_U$ covariates in $\bU$ that we assume to be linearly related to $\bgamma$. Let $\tilde{\bU}$ be the $N \times Q_U$ matrix including only these linear terms. Note that in our case, the first of these $Q_U$ columns is a column vector of 1's corresponding to the intercept. 
+Suppose that there are $Q_\theta$ covariates in $\bU$ that we assume to be linearly related to $\bgamma$. Let $\tilde{\bU}$ be the $N \times Q_\theta$ matrix including only these linear terms. Note that in our case, the first of these $Q_\theta$ columns is a column vector of 1's corresponding to the intercept. 
 
 Next, in our model, one covariate in $\bU$ is the Age of the subject in each image. We assume that age has a non-linear association with growth, and also that the non-linear association will vary by suture fusion type. To put this into practice, we will estimate one non-linear function $\Phi_{1k}(Age_i)$ for those with no suture fusion, and then will estimate a fusion-specific deviation function for each suture fusion type, $\mathcal{H}_{rk}(Age_i, Fusion_i)$.
 
 Putting these together, we assume
 
 $$ 
-E[\gamma_{ik}] = \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} + \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i).
+E[\gamma_{ik}] = \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_\theta, k} \tilde{U}_{iQ_\theta} + \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i).
 $$
 
 Next, we convert this equation into matrix form. The linear terms are relatively straightforward to convert to matrix form:
 
 $$
-\theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} = 
+\theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_\theta, k} \tilde{U}_{iQ_\theta} = 
 \begin{bmatrix}
-1 & \tilde{U}_{i2} & \ldots & \tilde{U}_{iQ_U}
+1 & \tilde{U}_{i2} & \ldots & \tilde{U}_{iQ_\theta}
 \end{bmatrix} \begin{bmatrix}
-\theta_{1k} \\ \vdots \\ \theta_{Q_U,k}
+\theta_{1k} \\ \vdots \\ \theta_{Q_\theta,k}
 \end{bmatrix} = \tilde{\bU}_i \btheta_k.
 $$
 
@@ -1230,14 +1249,14 @@ $$
 \end{bmatrix} \\
 &= 
 \begin{bmatrix}
-1 & \tilde{U}_{12} & \ldots & \tilde{U}_{1Q_U} & h_1(Age_1) & \ldots & h_L(Age_1) & h_{21}^*(Age_1, Fusion_1) & \ldots &  h_{RL}^*(Age_1, Fusion_1) \\
+1 & \tilde{U}_{12} & \ldots & \tilde{U}_{1Q_\theta} & h_1(Age_1) & \ldots & h_L(Age_1) & h_{21}^*(Age_1, Fusion_1) & \ldots &  h_{RL}^*(Age_1, Fusion_1) \\
 \vdots \\
-1 & \tilde{U}_{N2} & \ldots & \tilde{U}_{NQ_U} & h_1(Age_N) & \ldots & h_L(Age_N) & h_{21}^*(Age_N, Fusion_N) & \ldots &  h_{RL}^*(Age_N, Fusion_N)
+1 & \tilde{U}_{N2} & \ldots & \tilde{U}_{NQ_\theta} & h_1(Age_N) & \ldots & h_L(Age_N) & h_{21}^*(Age_N, Fusion_N) & \ldots &  h_{RL}^*(Age_N, Fusion_N)
 \end{bmatrix}
 \end{aligned}.
 $$
 
-Then we define one coefficient vector relating each soap film basis coefficient $\gamma_k$ to all of these demographics in $\bW$. This coefficient vector $\bbeta_k$ contains $Q_U$ linear coefficients for untransformed covariates, which we denote $\btheta_k$, as well as $R*L$ coefficients defining one $L$-dimensional spline expansion of age for each of the $R$ fusion suture types, which we denote $\balpha_k$. Putting these together, we can write:
+Then we define one coefficient vector relating each soap film basis coefficient $\gamma_k$ to all of these demographics in $\bW$. This coefficient vector $\bbeta_k$ contains $Q_\theta$ linear coefficients for untransformed covariates, which we denote $\btheta_k$, as well as $R*L$ coefficients defining one $L$-dimensional spline expansion of age for each of the $R$ fusion suture types, which we denote $\balpha_k$. Putting these together, we can write:
 
 $$
 \begin{aligned}
@@ -1245,18 +1264,18 @@ $$
 \btheta_k^\top & \balpha_k^\top
 \end{bmatrix} \\
 &= \begin{bmatrix}
-\theta_{1k} & \ldots & \theta_{Q_U,k} & \alpha_{11k} & \ldots & \alpha_{1Lk} & \alpha_{21k} & \ldots & \alpha_{RLk}
+\theta_{1k} & \ldots & \theta_{Q_\theta,k} & \alpha_{11k} & \ldots & \alpha_{1Lk} & \alpha_{21k} & \ldots & \alpha_{RLk}
 \end{bmatrix},
 \end{aligned}
 $$
 
-Thus, $\bW$ is $N \times Q$ and $\bbeta$ is $Q \times K$, where $Q = Q_U + R*L$. 
+Thus, $\bW$ is $N \times Q$ and $\bbeta$ is $Q \times K$, where $Q = Q_\theta + R*L$. 
 
 Then altogether, we can write
 
 $$
 \begin{aligned}
-E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} +  \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i) \\
+E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_\theta, k} \tilde{U}_{iQ_\theta} +  \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i) \\
 = {} & \tilde{\bU}_i \btheta_k + \bh_{i1} \balpha_{1k} + \sum_{r = 2}^R \bh_{ir}^* \balpha_{rk} \\ \\
 \implies E[\gamma_{ik}] = {} & \bbeta_k^\top \bW_i^\top \\
 \implies E[\bgamma_i] = {} & \bbeta^\top \bW_i^\top \\
@@ -1304,7 +1323,7 @@ $$
 \begin{bmatrix}
 \theta_{11} & \ldots & \theta_{1,K_c} & \theta_{1,K_c + 1} & \ldots & \theta_{1K} \\
  & \ddots & & & \ddots \\
-\theta_{Q_U, 1} & \ldots & \theta_{Q_U, K_c} & \theta_{Q_U, K_c + 1} & \ldots & \theta_{Q_U, K} \\
+\theta_{Q_\theta, 1} & \ldots & \theta_{Q_\theta, K_c} & \theta_{Q_\theta, K_c + 1} & \ldots & \theta_{Q_\theta, K} \\
 \alpha_{111} & \ldots & \alpha_{11K_c} & \alpha_{1,1, K_c + 1} & \ldots & \alpha_{11K} \\
  & \ddots & & & \ddots & \\
 \alpha_{R L 1} & \ldots & \alpha_{R L K_c} & \alpha_{R, L, K_c + 1} & \ldots & \alpha_{R L K}
@@ -1323,24 +1342,24 @@ $$
 
 Last, we need to specify a prior distribution for $\bbeta$. 
 
-We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_\alpha$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the age effects can be modeled using the same spline expansion, and all spline expansions share one $\lambda_\alpha$. Therefore, 
+We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_h$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the age effects can be modeled using the same spline expansion, and all spline expansions share one $\lambda_\alpha$. Therefore, 
 
 $$
-\bP_T^{(\alpha)} = \lambda_\alpha \tilde{\bP}_\alpha = \lambda_\alpha [\bI_R \otimes \bP_\alpha].
+\bP_T^{(\alpha)} = \lambda_\alpha \bP_\alpha = \lambda_\alpha [\bI_R \otimes \bP_h].
 $$
 
 To combine $\balpha_k$ with $\btheta_k$, we also need to establish a prior variance for $\btheta_k$ that leaves no penalty for complexity on $\btheta_k$. This is accomplished by using an identity matrix to represent the prior covariance of $\btheta_k$. Then:
 
 $$
 \bP_T^{(\beta)} = \begin{bmatrix}
-\bI_{Q_U} & \bzero \\
+\bI_{Q_\theta} & \bzero \\
 \bzero & \bP_T^{(\alpha)}
 \end{bmatrix} = 
 \begin{bmatrix}
-\bI_{Q_U} & \bzero & \ldots & \bzero \\
-\bzero & \lambda_\alpha \bP_\alpha & \ldots &\bzero \\
+\bI_{Q_\theta} & \bzero & \ldots & \bzero \\
+\bzero & \lambda_\alpha \bP_h & \ldots &\bzero \\
 \vdots & & \ddots & \vdots \\
-\bzero & \bzero & \ldots & \lambda_\alpha \bP_\alpha
+\bzero & \bzero & \ldots & \lambda_\alpha \bP_h
 \end{bmatrix}
 $$
 
@@ -1376,8 +1395,8 @@ $$
 \end{bmatrix} \\
 \bbeta_{+k} & \iid \mathcal{N} (\bzero, {\color{red} \tau^2 } \bP_T^{(\beta) -}) \\
 \bP_T^{(\beta)} &:= \begin{bmatrix}
-\bI_{Q_U} & \bzero \\
-\bzero & {\color{red} \lambda_\alpha } (\bI_R \otimes {\color{green} \bP_\alpha})
+\bI_{Q_\theta} & \bzero \\
+\bzero & {\color{red} \lambda_\alpha } \bP_\alpha
 \end{bmatrix}
 \end{aligned}
 $$
@@ -1434,7 +1453,7 @@ $$
 & (6) & [\tau^2 | \cdot] & \sim {} && \Gamma^{-1} ( && a_\tau + \frac{Q*K}{2}, \\
 & & & && && b_\tau + \frac{1}{2} vec(\bbeta)^\top (\bI_K \otimes \bP_T^{(\beta)}) vec(\bbeta) ) \\ \\
 & (7) & [\lambda_\alpha | \cdot] & \sim {} && \Gamma ( && a_\alpha + \frac{R*L*K}{2}, \\
-& & & && && b_\alpha + \frac{1}{2 \tau^2} vec(\balpha^\top)^\top (\tilde{\bP}_\alpha \otimes \bI_K) vec(\balpha^\top) )
+& & & && && b_\alpha + \frac{1}{2 \tau^2} vec(\balpha^\top)^\top (\bP_\alpha \otimes \bI_K) vec(\balpha^\top) )
 \end{alignat*}
 $$
 
@@ -1453,10 +1472,17 @@ gc(verbose = F)
 
 set.seed(617)
 
+# # ***DRAFT***: Fix sigma squared to improve scale
+# sigmasq_true <- 50 # Similar to variance of all individuals' growth
+# tausq_true <- 10
+# lambdas_demo <- 1e-4
+
 source(here("source", "15_run_gibbs_sampler.R"))
 ```
 
 ```{r}
+#| label: show joint model results
+
 
 ```
 

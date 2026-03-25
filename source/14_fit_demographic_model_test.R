@@ -40,7 +40,7 @@ cranio_coeff_smooth <- s(age, bs = "ts", k = cranio_knots_age)
 ## Create design and penalty matrices using functions we wrote
 cranio_coeff_ingredients <- construct_reference_smooth(
   sm = cranio_coeff_smooth, dat = cranio_coeff_df,
-  by_var = "fusion_type", param_formula = ~sex
+  by_var = "fusion_type", param_formula = ~sex + fusion_type
 )
 
 # Combine suture fusion penalties so we estimate the same lambda
@@ -51,7 +51,7 @@ cranio_coeff_S_combo <- list(cranio_coeff_ingredients$S[[1]],
 scale_coeff_penalty <- norm(cranio_soap$S[[1]], type = "O") /
   norm(cranio_coeff_ingredients$smooth[[1]]$S[[1]], type = "O")
 
-cranio_coeff_S_combo <- map(cranio_coeff_S_combo, ~ .x * scale_coeff_penalty)
+cranio_coeff_S_combo[-1] <- map(cranio_coeff_S_combo[-1], ~ .x * scale_coeff_penalty)
 
 # Save intermediate steps to share
 save(cranio_coeff_ingredients,
@@ -67,8 +67,8 @@ coeff_y <- cranio_coeff_df$beta_38
 # Set default parameters
 def_pars_coeff <- c(
   "beta" = 0.0,
-  "sigma_sq" = var(coeff_y),
-  "lambda" = 0.1,
+  "sigma_sq" = var(coeff_y) / length(coeff_y),
+  "lambda" = 1e-3,
   "a" = 1.0,
   "b" = 1.0,
   "c" = 1.0,
@@ -190,7 +190,7 @@ coeff_new_X_list <- map(cranio_coeff_ingredients$smooth,
 coeff_new_design <- Reduce(
   "cbind", c(
     list(
-      model.matrix(~sex, data = coeff_newdata),
+      model.matrix(~sex + fusion_type, data = coeff_newdata),
       Reduce("+", coeff_new_X_list)),
     coeff_new_X_list[-1]
   ))
@@ -233,4 +233,4 @@ coeff_bayes1_plot <- ggplot(coeff_newdata %>% filter(sex == 0),
 # Add y limit so that patterns are more visible
 coeff_bayes1_plot_lim <- coeff_bayes1_plot +
   coord_cartesian(ylim = max(coeff_y)*c(-0.5, 1.25)) +
-labs(title = "Bayesian Hierarchical Coefficient Functions (Zoomed In)")
+labs(title = "Bayesian Hierarchical Coefficient Functions (Axes Fixed)")

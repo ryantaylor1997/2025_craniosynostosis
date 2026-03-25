@@ -10,7 +10,7 @@
 # - Based on mvtnorm::rmvnorm cholesky method
 # - Innovation: accept Matrix package sparse formats as mean and variance
 rmvnorm_Matrix <- function(n,
-                           mean = rep(0, nrow(sigma)),
+                           mean = rep(0, ncol(sigma)),
                            sigma = Diagonal(length(mean))){
 
   ## Take Cholesky decomposition
@@ -42,7 +42,15 @@ rmvnorm_Matrix <- function(n,
   }
 
   ## Convert mean vector to a matrix the size of the random draw
-  mean_mx <- Matrix(rep(mean, n), nrow = n, byrow = TRUE)
+
+
+  if(is.null(dim(mean)) | min(dim(mean)) == 1){
+    # First, the case when mean is a vector or 1-dim matrix
+    mean_mx <- Matrix(rep(mean, n), nrow = n, byrow = TRUE)
+  } else if(nrow(mean) == n) {
+    # Next, where mean is a matrix and each row is the mean for a separate draw
+    mean_mx <- mean
+  }
 
   ## Take random draw of (univariate) standard normal
   rands <- rnorm(n * ncol(sigma))

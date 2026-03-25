@@ -13,7 +13,7 @@ if(DO_PRELIM_MODEL_FUSION){
     # Fit model with linear sex effect, smoothed age term, and row-col tensor surface
     mutate(model = map(data,
                        ~bam(diff ~ sex + s(age, bs = "cr") +
-                              te(row, col),
+                              te(row, col, k=c(8,8)),
                             data= .x)))
 
   saveRDS(
@@ -54,12 +54,12 @@ newdata_fusiongam <- tibble(
   fused_RCoronal = 0,
   fused_LCoronal = 0,
   sex = 0,
-  age = 365,
-  row = list(seq(from = (min(cranio_bound_matrix$row) - 30),
-                 to = (max(cranio_bound_matrix$row) + 30),
+  age = 300,
+  row = list(seq(from = (min(cranio_bound_matrix$row) - 10),
+                 to = (max(cranio_bound_matrix$row) + 10),
                  length.out = 50)),
-  col = list(seq(from = (min(cranio_bound_matrix$col) - 30),
-                 to = (max(cranio_bound_matrix$col) + 30),
+  col = list(seq(from = (min(cranio_bound_matrix$col) - 10),
+                 to = (max(cranio_bound_matrix$col) + 10),
                  length.out = 50))
 ) %>%
   unnest_longer(row) %>% unnest_longer(col)
@@ -77,24 +77,30 @@ fusion_model_summ <- fusion_models %>%
 
 # Plot GAM predictions ----------------------------------------------------
 
+# Determine true data scale range
+matrix_diff_range <- cranio_matrix %>%
+  unnest(data) %>%
+  summarize(low_pct = quantile(diff, 0.1, na.rm = T),
+            max = max(diff, na.rm = T))
+
 # Plot these predictions (in a rectangle shape with brain mask)
 plot_model_fusion <- ggplot() +
   geom_raster(data = fusion_model_summ,
               aes(x = row, y = col, fill = fit)) +
   geom_sf(data = cranio_bound_shape, fill = NA, linewidth = 1) +
   facet_wrap(~fusion_type, nrow = 2) +
-  scale_fill_viridis_c(option = "turbo") +
-  scale_alpha(range = c(0.5, 1), guide = "none") +
+  scale_fill_viridis_c(option = "turbo",
+                       limits = quantile(fusion_model_summ$fit,
+                                         c(0.01, 0.99))) +
   theme_void() +
   theme(axis.text = element_blank(),
         axis.ticks = element_blank()) +
-  labs(fill = "Pred. Growth\n(1 y.o. F)") +
+  labs(fill = "Pred. Growth\n(10 mo. F)") +
   theme(legend.position = "bottom")
 
 ggsave(here::here("results", "tensor_smooth_fusion.png"),
        plot_model_fusion,
        height = 4, width = 8, units = "in")
-
 
 # Predict smoothed age effect ---------------------------------------------
 
