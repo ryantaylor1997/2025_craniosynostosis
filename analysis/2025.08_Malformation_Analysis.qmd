@@ -138,7 +138,7 @@ DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
 DO_INDIV_SOAPS <- F
-DO_JOINT_FIT <- T
+DO_JOINT_FIT <- F
 
 # Set a flag for what not to delete
 RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
@@ -196,12 +196,16 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Wrote function to simulate data based on our model
--   Updated Gibbs function to use `Matrix` package and avoid memory issues with Kronecker products
+- Limited analysis to under 1 year old
+- Removed duplicates from subset data
+- Added linear terms for fusion type into model
+- Removed Kronecker products from Gibbs sampler function (except for update of subject-level covariate coefficients)
+- Added results from preliminary joint model fit to the document
+- Updated 2D tensor product models to use 8-dimension functions, comparable to the dimension of our model
 
 ## Questions
 
-
+- Can we add a 2nd level of scaling terms to the subject-level coefficients? This would change the assumption from $[\bbeta_k | \tau^2, \lambda_\alpha] \iid \mathcal{N}_Q (\bzero, \tau^2 \bP_T^{(\beta) -})$ to $[\bbeta_k | \tau^2, \lambda_\alpha] \iid \mathcal{N}_Q (\bzero, \tau^2 * \text{diag}(\psi_1, \ldots, \psi_Q) * \bP_T^{(\beta) -})$. Josh and I had talked about setting $\psi_q = 1$ for everything except the linear fusion terms, and setting one $\psi_q$ for these three parameters.
 
 ## Collaborator Questions
 
@@ -1483,6 +1487,10 @@ source(here("source", "15_run_gibbs_sampler.R"))
 ```{r}
 #| label: show joint model results
 
+# Plot patterns across age for representative points
+outcomes_plot
 
+# Plot patterns across shape for representative ages
+joint_estimates_plot
 ```
 

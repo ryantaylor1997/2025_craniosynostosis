@@ -272,8 +272,6 @@ outcomes_plot_sag <- ggplot(joint_outcomes_surface_df %>%
         strip.text.x = element_text(size = 10,
                                     margin = margin(t = 2, b = 3)))
 
-outcomes_plot_sag
-
 outcomes_plot <- ggplot(joint_outcomes_surface_df) +
   geom_raster(aes(x = row, y = col, fill = value)) +
   facet_nested(fusion_type ~ age_header + age,

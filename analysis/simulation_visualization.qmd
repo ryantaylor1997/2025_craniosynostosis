@@ -137,7 +137,7 @@ $$
 \boldsymbol{\gamma} &= \mathbf{W} \boldsymbol{\beta} + \boldsymbol{\epsilon}^{(\gamma)} \\
 \boldsymbol{\epsilon}^{(G)}_{im} & \overset{iid}{\sim} \mathcal{N}(0, \sigma^2) \\
 \boldsymbol{\epsilon}^{(\gamma)}_{i \bullet} & \overset{iid}{\sim} \mathcal{N}_K(\boldsymbol{0}, \sigma^2 \mathbf{P}_T^{(\gamma) -}) \\
-\boldsymbol{\beta}_{\bullet k} & \overset{iid}{\sim} \mathcal{N}_Q(\boldsymbol{0}, \tau^2 \mathbf{P}_T^{(\beta) -}).
+\boldsymbol{\beta}_{\bullet k} & \overset{indep}{\sim} \mathcal{N}_Q(\boldsymbol{0}, \tau^2 \upsilon_k \mathbf{P}_T^{(\beta) -}).
 \end{aligned}
 $$
 

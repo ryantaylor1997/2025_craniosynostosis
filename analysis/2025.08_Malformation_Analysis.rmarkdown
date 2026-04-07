@@ -112,7 +112,7 @@ pacman::p_load(
   mgcv,
   
   # Useful extensions
-  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS,
+  gtools, readxl, reshape2, ggridges, Matrix, MASS, ggh4x,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
@@ -138,6 +138,7 @@ DO_PRELIM_MODEL_REGION <- F
 DO_PRELIM_MODEL_PIXEL <- F
 DO_PRELIM_MODEL_FUSION <- F
 DO_INDIV_SOAPS <- F
+DO_JOINT_FIT <- F
 
 # Set a flag for what not to delete
 RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
@@ -160,8 +161,21 @@ MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")
 # Define number of knots along each dimension of soap film
 so_GRID_N <- 10
 
-# Define number of knots along age effecet
+# Define number of knots along age effect
 cranio_knots_age <- 10
+
+# Define maximum age
+cranio_max_age <- 365
+
+# Define age category cutoffs
+cranio_age_breaks <- c(seq(0, 300, 60), cranio_max_age)
+
+# Label these with spaces so they can wrap in plots
+cranio_age_break_labels <- map_chr(2:length(cranio_age_breaks),
+                            ~paste0(cranio_age_breaks[.-1],
+                                    " - ",
+                                    if_else(. == length(cranio_age_breaks), "", "<"),
+                                    cranio_age_breaks[.]))
 
 # Use data set to merge in fusion variables for regressions
 fusion_dict <- tibble(
@@ -182,14 +196,16 @@ This document consolidates our work on a Bayesian hierarchical model using a soa
 
 ## Updates
 
--   Wrote function to simulate data based on our model
--   Updated Gibbs function to use `Matrix` package and avoid memory issues with Kronecker products
-
-
+- Limited analysis to under 1 year old
+- Removed duplicates from subset data
+- Added linear terms for fusion type into model
+- Removed Kronecker products from Gibbs sampler function (except for update of subject-level covariate coefficients)
+- Added results from preliminary joint model fit to the document
+- Updated 2D tensor product models to use 8-dimension functions, comparable to the dimension of our model
 
 ## Questions
 
-
+- Can we add a 2nd level of scaling terms to the subject-level coefficients? This would change the assumption from $[\bbeta_k | \tau^2, \lambda_\alpha] \iid \mathcal{N}_Q (\bzero, \tau^2 \bP_T^{(\beta) -})$ to $[\bbeta_k | \tau^2, \lambda_\alpha] \iid \mathcal{N}_Q (\bzero, \tau^2 * \text{diag}(\psi_1, \ldots, \psi_Q) * \bP_T^{(\beta) -})$. Josh and I had talked about setting $\psi_q = 1$ for everything except the linear fusion terms, and setting one $\psi_q$ for these three parameters.
 
 ## Collaborator Questions
 
@@ -322,6 +338,8 @@ Next, we load the malformation maps into one data set. Each malformation map is 
 #| label: load-matrix-files
 
 # Toggle whether to create matrix data
+
+# NB: filtering matrix also involves identifying duplicates in covariates
 if(DO_LOAD_MATRICES & DO_FILTER_MATRICES){
   
   source(here("source", "03_load_Matrix_data.R"))
@@ -334,13 +352,15 @@ if(DO_LOAD_MATRICES & DO_FILTER_MATRICES){
   
   source(here("source", "04_filter_matrix_data.R"))
   
+  cranio_matrix <- cranio_matrix_sub
+  
 } else {
   cranio_matrix <- readRDS(file = here::here("analysis", "intermediate", 
                                              "covars_and_matrices_sub.rds"))
+  
+  cranio_sub <- readRDS(file = here::here("analysis", "intermediate",
+                                          "demographics_filtered.rds"))
 }
-
-# Identify duplicate data
-source(here("source", "check_matrix_duplicates.R"))
 ```
 
 ### Data Subset {#sec-subset-data}
@@ -522,6 +542,10 @@ Next, for a preliminary spatial model, we split the data only by fusion type. Ba
 
 ```{r}
 #| label: gam-2d-models
+
+# Clear memory space
+rm(list = setdiff(ls(), c(lsf.str(), ls(pattern = eval(RM_IGNORE)))))
+gc(verbose = F)
 
 source(here("source", "08_prelim_models_2dGAM.R"))
 ```
@@ -920,6 +944,8 @@ $$
 ```{r}
 #| label: bayes-soap-film-test
 
+set.seed(978)
+
 source(here("source", "13_fit_soap_film_bayes.R"))
 ```
 
@@ -982,6 +1008,8 @@ $$
 ```{r}
 #| label: fit-coeff-demographic-model-test
 
+set.seed(603)
+
 source(here("source", "14_fit_demographic_model_test.R"))
 ```
 
@@ -1004,13 +1032,13 @@ coeff_plots
 
 First, we set up the design matrix and penalty matrices, which are the same for each basis coefficient. We currently use 10 knots for each suture fusion-specific smooth. Therefore, the design matrix currently includes 2 parametric covariates (1 intercept and 1 Sex indicator), 9 basis functions for a reference smooth, and $9 * 5 = 45$ basis functions for the smooths associated with Sagittal, Metopic, Left Coronal, Right Coronal, and Bicoronal. In total, the design matrix $\bW$ is $n \times Q$, where $Q = 56$.
 
-Note that these smooths account for an identifiability constraint. Since we are including multiple basis expansions, each covariate in the smooths needs to sum to zero. In practice, this leads us to subtract the column mean from each column of the design matrix, which reduces the rank of each smooth's columns by 1. Therefore, though we use 10 knots for each smooth, we only keep 9 columns.
+*TO UPDATE: Note that these smooths account for an identifiability constraint. Since we are including multiple basis expansions, each covariate in the smooths needs to sum to zero. In practice, this leads us to subtract the column mean from each column of the design matrix, which reduces the rank of each smooth's columns by 1. Therefore, though we use 10 knots for each smooth, we only keep 9 columns.*
 
 We set up the design matrix and the penalty matrices to match the Gibbs sampler function we have already written to fit a penalized linear regression model, which in turn matches the penalty matrices in `mgcv`. Therefore, each penalty matrix is $Q \times Q$ and block-diagonal, with one $9 \times 9$ penalty matrix included and the remainder of the matrix left as 0.
 
 First, we construct a full "reference" matrix and penalty matrix using `mgcv::smooth.construct2`.
 
-Second, we write functionss that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
+Second, we write functions that takes this smooth object, data, the name of the factor variable we want to construct separate splines for, and the names of the unpenalized "parametric" covariates, and constructs a full design matrix and penalty matrix list for these.
 
 ## Single Basis Coefficient Bayesian Additive Model {#sec-coeff-gibbs}
 
@@ -1168,24 +1196,24 @@ At this level, we have modeled each individual image's spatial pattern across $\
 
 In our case, it is not appropriate to model $\gamma_{ik}$ as a linear function of the demographics $\bU_i$. Instead, we will model $\gamma_{ik}$ as a linear function of some untransformed covariates as well as a second spline expansion over Age, separated by suture fusion type. To make our model general enough to accomodate any linear combination of nonlinear functions of covariates $\bU_i$, let $\bW$ be the $N \times Q$ matrix containing untransformed covariates as well as realizations of basis spline expansions.
 
-Suppose that there are $Q_U$ covariates in $\bU$ that we assume to be linearly related to $\bgamma$. Let $\tilde{\bU}$ be the $N \times Q_U$ matrix including only these linear terms. Note that in our case, the first of these $Q_U$ columns is a column vector of 1's corresponding to the intercept. 
+Suppose that there are $Q_\theta$ covariates in $\bU$ that we assume to be linearly related to $\bgamma$. Let $\tilde{\bU}$ be the $N \times Q_\theta$ matrix including only these linear terms. Note that in our case, the first of these $Q_\theta$ columns is a column vector of 1's corresponding to the intercept. 
 
 Next, in our model, one covariate in $\bU$ is the Age of the subject in each image. We assume that age has a non-linear association with growth, and also that the non-linear association will vary by suture fusion type. To put this into practice, we will estimate one non-linear function $\Phi_{1k}(Age_i)$ for those with no suture fusion, and then will estimate a fusion-specific deviation function for each suture fusion type, $\mathcal{H}_{rk}(Age_i, Fusion_i)$.
 
 Putting these together, we assume
 
 $$ 
-E[\gamma_{ik}] = \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} + \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i).
+E[\gamma_{ik}] = \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_\theta, k} \tilde{U}_{iQ_\theta} + \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i).
 $$
 
 Next, we convert this equation into matrix form. The linear terms are relatively straightforward to convert to matrix form:
 
 $$
-\theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} = 
+\theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_\theta, k} \tilde{U}_{iQ_\theta} = 
 \begin{bmatrix}
-1 & \tilde{U}_{i2} & \ldots & \tilde{U}_{iQ_U}
+1 & \tilde{U}_{i2} & \ldots & \tilde{U}_{iQ_\theta}
 \end{bmatrix} \begin{bmatrix}
-\theta_{1k} \\ \vdots \\ \theta_{Q_U,k}
+\theta_{1k} \\ \vdots \\ \theta_{Q_\theta,k}
 \end{bmatrix} = \tilde{\bU}_i \btheta_k.
 $$
 
@@ -1225,14 +1253,14 @@ $$
 \end{bmatrix} \\
 &= 
 \begin{bmatrix}
-1 & \tilde{U}_{12} & \ldots & \tilde{U}_{1Q_U} & h_1(Age_1) & \ldots & h_L(Age_1) & h_{21}^*(Age_1, Fusion_1) & \ldots &  h_{RL}^*(Age_1, Fusion_1) \\
+1 & \tilde{U}_{12} & \ldots & \tilde{U}_{1Q_\theta} & h_1(Age_1) & \ldots & h_L(Age_1) & h_{21}^*(Age_1, Fusion_1) & \ldots &  h_{RL}^*(Age_1, Fusion_1) \\
 \vdots \\
-1 & \tilde{U}_{N2} & \ldots & \tilde{U}_{NQ_U} & h_1(Age_N) & \ldots & h_L(Age_N) & h_{21}^*(Age_N, Fusion_N) & \ldots &  h_{RL}^*(Age_N, Fusion_N)
+1 & \tilde{U}_{N2} & \ldots & \tilde{U}_{NQ_\theta} & h_1(Age_N) & \ldots & h_L(Age_N) & h_{21}^*(Age_N, Fusion_N) & \ldots &  h_{RL}^*(Age_N, Fusion_N)
 \end{bmatrix}
 \end{aligned}.
 $$
 
-Then we define one coefficient vector relating each soap film basis coefficient $\gamma_k$ to all of these demographics in $\bW$. This coefficient vector $\bbeta_k$ contains $Q_U$ linear coefficients for untransformed covariates, which we denote $\btheta_k$, as well as $R*L$ coefficients defining one $L$-dimensional spline expansion of age for each of the $R$ fusion suture types, which we denote $\balpha_k$. Putting these together, we can write:
+Then we define one coefficient vector relating each soap film basis coefficient $\gamma_k$ to all of these demographics in $\bW$. This coefficient vector $\bbeta_k$ contains $Q_\theta$ linear coefficients for untransformed covariates, which we denote $\btheta_k$, as well as $R*L$ coefficients defining one $L$-dimensional spline expansion of age for each of the $R$ fusion suture types, which we denote $\balpha_k$. Putting these together, we can write:
 
 $$
 \begin{aligned}
@@ -1240,18 +1268,18 @@ $$
 \btheta_k^\top & \balpha_k^\top
 \end{bmatrix} \\
 &= \begin{bmatrix}
-\theta_{1k} & \ldots & \theta_{Q_U,k} & \alpha_{11k} & \ldots & \alpha_{1Lk} & \alpha_{21k} & \ldots & \alpha_{RLk}
+\theta_{1k} & \ldots & \theta_{Q_\theta,k} & \alpha_{11k} & \ldots & \alpha_{1Lk} & \alpha_{21k} & \ldots & \alpha_{RLk}
 \end{bmatrix},
 \end{aligned}
 $$
 
-Thus, $\bW$ is $N \times Q$ and $\bbeta$ is $Q \times K$, where $Q = Q_U + R*L$. 
+Thus, $\bW$ is $N \times Q$ and $\bbeta$ is $Q \times K$, where $Q = Q_\theta + R*L$. 
 
 Then altogether, we can write
 
 $$
 \begin{aligned}
-E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_U, k} \tilde{U}_{iQ_U} +  \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i) \\
+E[\gamma_{ik}] = {} & \theta_{1k} + \theta_{2k} \tilde{U}_{i2} + \ldots + \theta_{Q_\theta, k} \tilde{U}_{iQ_\theta} +  \mathcal{H}_{1k}(Age_i) + \sum_{r=2}^R \mathcal{H}_{rk}(Age_i, Fusion_i) \\
 = {} & \tilde{\bU}_i \btheta_k + \bh_{i1} \balpha_{1k} + \sum_{r = 2}^R \bh_{ir}^* \balpha_{rk} \\ \\
 \implies E[\gamma_{ik}] = {} & \bbeta_k^\top \bW_i^\top \\
 \implies E[\bgamma_i] = {} & \bbeta^\top \bW_i^\top \\
@@ -1299,7 +1327,7 @@ $$
 \begin{bmatrix}
 \theta_{11} & \ldots & \theta_{1,K_c} & \theta_{1,K_c + 1} & \ldots & \theta_{1K} \\
  & \ddots & & & \ddots \\
-\theta_{Q_U, 1} & \ldots & \theta_{Q_U, K_c} & \theta_{Q_U, K_c + 1} & \ldots & \theta_{Q_U, K} \\
+\theta_{Q_\theta, 1} & \ldots & \theta_{Q_\theta, K_c} & \theta_{Q_\theta, K_c + 1} & \ldots & \theta_{Q_\theta, K} \\
 \alpha_{111} & \ldots & \alpha_{11K_c} & \alpha_{1,1, K_c + 1} & \ldots & \alpha_{11K} \\
  & \ddots & & & \ddots & \\
 \alpha_{R L 1} & \ldots & \alpha_{R L K_c} & \alpha_{R, L, K_c + 1} & \ldots & \alpha_{R L K}
@@ -1318,23 +1346,24 @@ $$
 
 Last, we need to specify a prior distribution for $\bbeta$. 
 
-We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_\alpha$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the spline expansions share one $\lambda_\alpha$. Therefore, 
+We want to penalize the complexity of each nonlinear function defined by one set $\balpha_{kr} = \{\alpha_{kr1}, \ldots, \alpha_{krL}\}$. Similar to above, the complexity of the function defined by a nonlinear function can be quantified using an $L \times L$ penalty matrix $\bP_h$ and a corresponding penalty constant $\lambda_\alpha$. For our model, we assume that all of the age effects can be modeled using the same spline expansion, and all spline expansions share one $\lambda_\alpha$. Therefore, 
+
 $$
-\bP_T^{(\alpha)} = \lambda_\alpha [\bI_R \otimes \bP_\alpha].
+\bP_T^{(\alpha)} = \lambda_\alpha \bP_\alpha = \lambda_\alpha [\bI_R \otimes \bP_h].
 $$
 
 To combine $\balpha_k$ with $\btheta_k$, we also need to establish a prior variance for $\btheta_k$ that leaves no penalty for complexity on $\btheta_k$. This is accomplished by using an identity matrix to represent the prior covariance of $\btheta_k$. Then:
 
 $$
 \bP_T^{(\beta)} = \begin{bmatrix}
-\bI_{Q_U} & \bzero \\
+\bI_{Q_\theta} & \bzero \\
 \bzero & \bP_T^{(\alpha)}
 \end{bmatrix} = 
 \begin{bmatrix}
-\bI_{Q_U} & \bzero & \ldots & \bzero \\
-\bzero & \lambda_\alpha \bP_\alpha & \ldots &\bzero \\
+\bI_{Q_\theta} & \bzero & \ldots & \bzero \\
+\bzero & \lambda_\alpha \bP_h & \ldots &\bzero \\
 \vdots & & \ddots & \vdots \\
-\bzero & \bzero & \ldots & \lambda_\alpha \bP_\alpha
+\bzero & \bzero & \ldots & \lambda_\alpha \bP_h
 \end{bmatrix}
 $$
 
@@ -1370,8 +1399,8 @@ $$
 \end{bmatrix} \\
 \bbeta_{+k} & \iid \mathcal{N} (\bzero, {\color{red} \tau^2 } \bP_T^{(\beta) -}) \\
 \bP_T^{(\beta)} &:= \begin{bmatrix}
-\bI_{Q_U} & \bzero \\
-\bzero & {\color{red} \lambda_\alpha } (\bI_R \otimes {\color{green} \bP_\alpha})
+\bI_{Q_\theta} & \bzero \\
+\bzero & {\color{red} \lambda_\alpha } \bP_\alpha
 \end{bmatrix}
 \end{aligned}
 $$
@@ -1422,9 +1451,9 @@ $$
 & & & && && b_\sigma + \frac{1}{2} [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)]^\top [vec(\bG) - (\bB \otimes \bI_N) vec(\bgamma)] + \\
 & & & && && \frac{1}{2}[vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]^\top [\bP_T^{(\gamma)} \otimes \bI_N] [vec(\bgamma) - (\bI_K \otimes \bW) vec(\bbeta)]) \\ \\
 & (4) & [\lambda_c | \cdot] & \sim {} && \Gamma ( && a_c + \frac{N * K_c}{2}, \\
-& & & && && b_c + \frac{1}{2 \sigma^2} [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)]^\top [\bP_c \otimes \bI_N] [vec(\bgamma_c) - (\bI_{K_c} \otimes \bW) vec(\bbeta_c)] ) \\ \\
+& & & && && b_c + \frac{1}{2 \sigma^2} [vec(\bgamma^{(c)}) - (\bI_{K_c} \otimes \bW) vec(\bbeta^{(c)})]^\top [\bP_c \otimes \bI_N] [vec(\bgamma^{(c)}) - (\bI_{K_c} \otimes \bW) vec(\bbeta^{(c)})] ) \\ \\
 & (5) & [\lambda_f | \cdot] & \sim {} && \Gamma ( && a_f + \frac{N * K_f}{2}, \\
-& & & && && b_f + \frac{1}{2 \sigma^2} [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)]^\top [\bP_f \otimes \bI_N] [vec(\bgamma_f) - (\bI_{K_f} \otimes \bW) vec(\bbeta_f)] ) \\ \\
+& & & && && b_f + \frac{1}{2 \sigma^2} [vec(\bgamma^{(f)}) - (\bI_{K_f} \otimes \bW) vec(\bbeta^{(f)})]^\top [\bP_f \otimes \bI_N] [vec(\bgamma^{(f)}) - (\bI_{K_f} \otimes \bW) vec(\bbeta^{(f)})] ) \\ \\
 & (6) & [\tau^2 | \cdot] & \sim {} && \Gamma^{-1} ( && a_\tau + \frac{Q*K}{2}, \\
 & & & && && b_\tau + \frac{1}{2} vec(\bbeta)^\top (\bI_K \otimes \bP_T^{(\beta)}) vec(\bbeta) ) \\ \\
 & (7) & [\lambda_\alpha | \cdot] & \sim {} && \Gamma ( && a_\alpha + \frac{R*L*K}{2}, \\
@@ -1432,7 +1461,7 @@ $$
 \end{alignat*}
 $$
 
-## Combined Model Simulation {#sec-joint-model-sim}
+## Combined Model Fit {#sec-joint-model-fit}
 
 ```{r}
 #| results: hide
@@ -1443,9 +1472,26 @@ gc(verbose = F)
 ```
 
 ```{r}
-#| label: bayesian-hierarchical-gibbs-sim
+#| label: bayesian-hierarchical-gibbs
 
+set.seed(617)
 
+# # ***DRAFT***: Fix sigma squared to improve scale
+# sigmasq_true <- 50 # Similar to variance of all individuals' growth
+# tausq_true <- 10
+# lambdas_demo <- 1e-4
+
+source(here("source", "15_run_gibbs_sampler.R"))
+```
+
+```{r}
+#| label: show joint model results
+
+# Plot patterns across age for representative points
+outcomes_plot
+
+# Plot patterns across shape for representative ages
+joint_estimates_plot
 ```
 
 
