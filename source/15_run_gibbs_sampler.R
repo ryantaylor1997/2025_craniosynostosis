@@ -174,7 +174,7 @@ joint_new_design <- Reduce(
 
 ## Calculate estimated gammas for this sample data from posterior betas
 joint_new_gammas <- apply(cranio_joint$beta, 3,
-                          function(x){ joint_new_design %*% x}, simplify = F)
+                          function(x){ joint_new_design %*% x }, simplify = F)
 
 ## Calculate estimated outcomes from these estimated gammas
 
@@ -188,7 +188,7 @@ joint_outcomes_full <- simplify2array(
 # Take mean and 95% credible interval(?) from these estimates
 joint_outcomes_est <- apply(joint_outcomes_full, c(1, 2),
                             FUN = function(x) matrix(
-                              c(mean(x),
+                              c(median(x),
                                 quantile(x, 0.05),
                                 quantile(x, 0.95)),
                               nrow = 1
@@ -202,7 +202,7 @@ joint_outcomes_df <- joint_outcomes_est %>%
          region_num = Var3,
          estimate = value) %>%
   mutate(metric = case_match(metric,
-                             1 ~ "mean",
+                             1 ~ "median",
                              2 ~ "pct05",
                              3 ~ "pct95"))
 
@@ -217,7 +217,7 @@ fusion_color_dict %<>%
 
 # Create plots of mean predictions
 joint_estimates_plot <- ggplot(joint_newdata_est %>%
-                                 filter(metric == "mean"),
+                                 filter(metric == "median"),
                                aes(x = age, y = estimate,
                                    color = fusion_type,
                                    alpha = fusion_type)) +

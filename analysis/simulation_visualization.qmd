@@ -58,7 +58,7 @@ source(here::here("source", "mv_normal_matrix_fn.R"))
 source(here::here("source", "hierarchical_penalized_gibbs_fn.R"))
 
 DO_GIBBS <- F
-LOAD_GIBBS_DATE <- "2026-03-25"
+LOAD_GIBBS_DATE <- "2026-04-07"
 ```
 
 # Overview
@@ -260,9 +260,10 @@ demo_test_df <- tibble(
                   rep("Fusion_1", n_pats / 4),
                   rep("Fusion_2", n_pats / 4))
 ) %>%
-  mutate(fusion_type = factor(fusion_type,
-                              levels = c("Normative", "Fusion_1", "Fusion_2")),
+  mutate(fusion_type = factor(fusion_type),
          sex = as.factor(sex))
+
+sample_ages <- round(seq(0, age_max, length.out = 7) / 5) * 5
 
 save(demo_test_df, file = here::here("analysis", "intermediate",
                          paste0("simulation_demographics.rda")))
@@ -666,9 +667,9 @@ gamma_true <- demo_mx %*% demo_effect_mx
 gamma_mx <- gamma_true + epsilon_gamma
 
 # Calculate outcome data
-outcome_true <- tcrossprod(gamma_mx, basis_mx)
+outcome_true <- tcrossprod(gamma_true, basis_mx)
 
-outcome_mx_sim <- outcome_true + epsilon_G_mx
+outcome_mx_sim <- tcrossprod(gamma_mx, basis_mx) + epsilon_G_mx
 
 ```
 
@@ -681,11 +682,9 @@ With these generated parameters, we can visualize the implied effects of our dem
 
 # Create dense demographic data to visualize effect of betas
 demo_newdata <- demo_test_df %>%
-  mutate(min_age = min(age),
-         max_age = max(age)) %>%
-  distinct(fusion_type, min_age, max_age) %>%
+  distinct(fusion_type) %>%
   rowwise() %>%
-  mutate(age = list(seq(min_age, max_age, length.out = 50))) %>%
+  mutate(age = list(seq(0, age_max, 10))) %>%
   ungroup() %>%
   mutate(sex = 0) %>%
   unnest(age) %>% 
@@ -706,6 +705,9 @@ demo_new_design <- Reduce(
     Reduce("+", demo_new_X_list)), 
     demo_new_X_list[-1]
   ))
+
+# Remove row numbers so they don't get mixed up in the next step
+dimnames(demo_new_design) <- NULL
 
 # Add rows for effect of fusion deviation curves
 demo_newdata_fusions_rows <- which(demo_newdata$fusion_type != levels(demo_newdata$fusion_type)[1])
@@ -758,7 +760,7 @@ beta_effect_plot <- ggplot(beta_curve_df %>%
                                 !str_detect(fusion_type, "Only")),
                      aes(x = age, y = value, color = fusion_type)) +
   geom_line() +
-  facet_wrap(~Gamma, labeller = label_both, scales = "free_y") +
+  facet_wrap(~Gamma, labeller = label_both) +
   theme_minimal() +
   theme(legend.position = "bottom",
         axis.text.x = element_text(angle = 45, hjust = 1)) +
@@ -1052,6 +1054,8 @@ save(hierarchy_test,
 }
 ```
 
+# Model Results
+
 ```{r}
 #| label: trace data
 
@@ -1131,6 +1135,8 @@ hier_gibbs_tr <- imap(
   ungroup()
 ```
 
+## Trace Plots
+
 ```{r}
 #| label: trace plots
 
@@ -1156,6 +1162,8 @@ demo_trace_hier <- ggplot(hier_gibbs_tr %>%
 
 demo_trace_hier
 ```
+
+## Coefficient Scatter Plots
 
 ```{r}
 #| label: coefficient scatter plots
@@ -1232,17 +1240,22 @@ beta_scatter_bound <- ggplot(beta_vals %>%
 beta_scatter_bound
 ```
 
+## Subject-Level Effect Estimates
+
 ```{r}
 #| label: demographic curves
 #| fig.height: 10
 #| fig.width: 10
 
-# Extract posterior mean estimates
-beta_post <- apply(hierarchy_test$beta, c(1,2), mean)
+# Extract posterior estimates of gamma coefficients
+post_gammas_full <- simplify2array(
+  apply(hierarchy_test$beta, 3,
+        function(x){ demo_new_design %*% x }, simplify = F))
 
-beta_curve_est <- demo_new_design %*% beta_post
+post_gammas_est <- apply(post_gammas_full, c(1,2), mean)
 
-beta_curve_est_df <- beta_curve_est %>% 
+# Plot as curves with respect to age
+beta_curve_est_df <- post_gammas_est %>% 
   as.matrix() %>% 
   as.data.frame() %>% 
   mutate(subject = 1:n()) %>% 
@@ -1293,5 +1306,156 @@ beta_bias <- ggplot(beta_vals, aes(x = bias)) +
   geom_density() +
   scale_x_continuous(breaks = scales::breaks_width(0.02)) +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Predictions
+
+```{r}
+#| label: real outcomes
+
+# Calculate true outcomes for these observations
+outcomes_newdata <- demo_new_design %*% tcrossprod(demo_effect_mx, cranio_soap$X)
+
+outcomes_true_df <- outcomes_newdata %>% 
+  as.matrix() %>% 
+  as.data.frame() %>% 
+  mutate(row_num = 1:n()) %>% 
+  bind_cols(demo_newdata) %>% 
+  pivot_longer(matches("V"), names_to = "cell_num") %>% 
+  mutate(cell_num = as.numeric(str_remove(cell_num, "V")))
+```
+
+```{r}
+#| label: sample points
+
+# Load region object (matrix_region)
+load(file = here::here("analysis", "intermediate", "region_shape_object.rda"))
+
+# Find nearest point in image data to each region's centroid
+mx_pt_shape <- sf::st_as_sf(so_matrix_pts, coords = c("row", "col"))
+
+sample_points <- sf::st_nearest_feature(matrix_region$centroid, mx_pt_shape)
+
+# Add sample point identification to true outcomes
+outcomes_true_df %<>%
+  left_join(enframe(sample_points) %>% 
+              rename(region_num = name,
+                     cell_num = value))
+```
+
+```{r}
+#| label: predictions across age
+
+# Identify basis design matrix for sample points to plot
+basis_sample <- cranio_soap$X[sample_points,]
+
+post_outcomes_full <- simplify2array(
+  apply(post_gammas_full, 3, function(x){ tcrossprod(x, basis_sample) },
+  simplify = F))
+
+# Take mean and 95% credible interval(?) from these estimates
+post_outcomes_est <- apply(post_outcomes_full, c(1, 2),
+                           FUN = function(x) matrix(
+                             c(mean(x),
+                               quantile(x, 0.05),
+                               quantile(x, 0.95)),
+                             nrow = 1
+                           ))
+
+# Convert this to a dataframe
+post_outcomes_df <- post_outcomes_est %>%
+  reshape2::melt() %>%
+  rename(metric = Var1,
+         row_num = Var2,
+         region_num = Var3,
+         estimate = value) %>%
+  mutate(metric = case_match(metric,
+                             1 ~ "mean",
+                             2 ~ "pct05",
+                             3 ~ "pct95"))
+
+# Merge to interpretable data
+post_newdata_est <- demo_newdata %>%
+  mutate(row_num = 1:n()) %>%
+  left_join(post_outcomes_df) %>% 
+  left_join(outcomes_true_df %>% 
+              rename(outcome = value)) %>% 
+  pivot_longer(c(estimate, outcome), names_to = "value_type")
+```
+
+```{r}
+#| label: prediction plot across age
+
+# Create plots of mean predictions
+post_estimates_plot <- ggplot(post_newdata_est %>%
+                                 filter(metric == "mean" & 
+                                          !str_detect(fusion_type, "Only")),
+                               aes(x = age, y = value,
+                                   color = fusion_type,
+                                   linetype = value_type)) +
+  geom_line() +
+  facet_wrap(~region_num, nrow = 2, scales = "free_y") +
+  scale_linetype_manual(values = c("outcome" = 1,
+                                   "estimate" = 2)) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+  
+
+post_estimates_plot
+```
+
+```{r}
+#| label: plot prediction surfaces
+
+# Filter to a subset of sample individuals at interpretable ages
+post_surface_data <- demo_newdata %>%
+  mutate(row_num = row_number()) %>%
+  filter(age %in% sample_ages)
+
+# Extract gammas specific to these individuals
+joint_surface_gammas <- map(joint_new_gammas,
+                            function(x) x[joint_surface_data$row_num,])
+
+joint_gammas_surface_mean <- Reduce("+", joint_surface_gammas) / length(joint_surface_gammas)
+
+# Calculate estimated outcomes for each set of estimated gammas
+joint_outcomes_surface <- tcrossprod(joint_gammas_surface_mean, cranio_soap$X)
+
+# Convert to DF and merge in relevant info
+joint_outcomes_surface_df <- reshape2::melt(joint_outcomes_surface) %>%
+  rename(row_num = Var1, cell_num = Var2) %>%
+  left_join(joint_surface_data) %>%
+  left_join(so_matrix_pts %>% mutate(cell_num = row_number())) %>%
+  mutate(age_header = "Age (Days)")
+
+# Plot outcomes by suture fusion and age
+outcomes_plot_sag <- ggplot(joint_outcomes_surface_df %>%
+                              filter(fusion_type %in% c("Normative", "Sagittal"))) +
+  geom_raster(aes(x = row, y = col, fill = value)) +
+  facet_nested(fusion_type ~ age_header + age,
+               nest_line = element_line(linetype = 3)) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "Est. Growth") +
+  theme(legend.position = "bottom",
+        strip.text.x = element_text(size = 10,
+                                    margin = margin(t = 2, b = 3)))
+
+outcomes_plot <- ggplot(joint_outcomes_surface_df) +
+  geom_raster(aes(x = row, y = col, fill = value)) +
+  facet_nested(fusion_type ~ age_header + age,
+               nest_line = element_line(linetype = 3)) +
+  coord_fixed() +
+  scale_fill_viridis_c(option = "turbo") +
+  theme_void() +
+  theme(axis.text = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(fill = "Est. Growth") +
+  theme(legend.position = "bottom",
+        strip.text.x = element_text(size = 10,
+                                    margin = margin(t = 2, b = 3)))
 ```
 
