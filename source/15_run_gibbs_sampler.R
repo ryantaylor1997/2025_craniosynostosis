@@ -173,8 +173,9 @@ joint_new_design <- Reduce(
   ))
 
 ## Calculate estimated gammas for this sample data from posterior betas
-joint_new_gammas <- apply(cranio_joint$beta, 3,
-                          function(x){ joint_new_design %*% x }, simplify = F)
+joint_new_gammas <- simplify2array(
+  apply(cranio_joint$beta, 3,
+        function(x){ joint_new_design %*% x }, simplify = F))
 
 ## Calculate estimated outcomes from these estimated gammas
 
@@ -183,7 +184,7 @@ basis_sample <- cranio_soap$X[sample_points,]
 
 # Calculate estimated outcomes for each set of estimated gammas
 joint_outcomes_full <- simplify2array(
-  map(joint_new_gammas, ~tcrossprod(.x, basis_sample)))
+  apply(joint_new_gammas, ~tcrossprod(.x, basis_sample), simplify = F))
 
 # Take mean and 95% credible interval(?) from these estimates
 joint_outcomes_est <- apply(joint_outcomes_full, c(1, 2),
@@ -241,13 +242,12 @@ joint_surface_data <- joint_newdata %>%
   filter(age %in% seq(30, 330, 60))
 
 # Extract gammas specific to these individuals
-joint_surface_gammas <- map(joint_new_gammas,
-                            function(x) x[joint_surface_data$row_num,])
+joint_surface_gammas <- joint_new_gammas[joint_surface_data$row_num,,]
 
-joint_gammas_surface_mean <- Reduce("+", joint_surface_gammas) / length(joint_surface_gammas)
+joint_gammas_surface_median <- apply(joint_surface_gammas, c(1,2), median)
 
 # Calculate estimated outcomes for each set of estimated gammas
-joint_outcomes_surface <- tcrossprod(joint_gammas_surface_mean, cranio_soap$X)
+joint_outcomes_surface <- tcrossprod(joint_gammas_surface_median, cranio_soap$X)
 
 # Convert to DF and merge in relevant info
 joint_outcomes_surface_df <- reshape2::melt(joint_outcomes_surface) %>%

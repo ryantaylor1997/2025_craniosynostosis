@@ -170,7 +170,7 @@ load(file = here::here("analysis", "intermediate",
                          paste0("simulation_demographics.rda")))
 
 
-sim_date <- "2026-03-13"
+sim_date <- "2026-04-07"
 
 # Output from the most recent Gibbs sampler (hierarchy_test)
 load(file = here::here("analysis", "intermediate",
@@ -509,7 +509,7 @@ ggsave("../results/2026 ENAR Figures/basis_boundary.png",
 
 # Plot interior basis functions with corresponding knots
 soap_basis_int <- ggplot() +
-  geom_raster(data = basis_df %>% filter(basis_fn %in% c(10, 39, 69)),
+  geom_raster(data = basis_df %>% filter(basis_fn %in% c(10:12, 38:40, 67:69)),
               aes(x = row, y = col, fill = value)) +
   geom_point(data = so_grid_k %>% select(-basis_fn),
              aes(x = row, y = col),
@@ -526,7 +526,7 @@ soap_basis_int <- ggplot() +
 
 ggsave("../results/2026 ENAR Figures/basis_interior.png",
        soap_basis_int,
-       height = 3, width = 6, units = "in")
+       height = 2, width = 8, units = "in")
 ```
 
 # Results
@@ -786,8 +786,8 @@ joint_outcomes_surface_df <- reshape2::melt(joint_outcomes_surface) %>%
   mutate(age_header = "Age (Days)")
 
 # Plot outcomes by suture fusion and age
-outcomes_plot_sag <- ggplot(joint_outcomes_surface_df %>% 
-                            filter(fusion_type %in% c("Normative", "Sagittal"))) +
+outcomes_plot_sag_met <- ggplot(joint_outcomes_surface_df %>% 
+                            filter(fusion_type %in% c("Normative", "Sagittal", "Metopic"))) +
   geom_raster(aes(x = row, y = col, fill = value)) +
   facet_nested(fusion_type ~ age_header + age,
                nest_line = element_line(linetype = 3)) +
@@ -801,7 +801,7 @@ outcomes_plot_sag <- ggplot(joint_outcomes_surface_df %>%
         strip.text.x = element_text(size = 10, 
                                     margin = margin(t = 2, b = 3)))
 
-outcomes_plot_sag
+outcomes_plot_sag_met
 
 outcomes_plot <- ggplot(joint_outcomes_surface_df) +
   geom_raster(aes(x = row, y = col, fill = value)) +
@@ -817,9 +817,9 @@ outcomes_plot <- ggplot(joint_outcomes_surface_df) +
         strip.text.x = element_text(size = 10, 
                                     margin = margin(t = 2, b = 3)))
 
-ggsave("../results/2026 ENAR Figures/joint_sagittal_surface.png",
-       outcomes_plot_sag,
-       height = 3, width = 6, units = "in")
+ggsave("../results/2026 ENAR Figures/joint_sag_met_surface.png",
+       outcomes_plot_sag_met,
+       height = 4, width = 6, units = "in")
 
 ```
 

@@ -47,9 +47,13 @@ cranio_coeff_ingredients <- construct_reference_smooth(
 cranio_coeff_S_combo <- list(cranio_coeff_ingredients$S[[1]],
                              Reduce("+", cranio_coeff_ingredients$S[-1]))
 
-# Adjust penalty matrices for underflow
-scale_coeff_penalty <- norm(cranio_soap$S[[1]], type = "O") /
-  norm(cranio_coeff_ingredients$smooth[[1]]$S[[1]], type = "O")
+# Adjust penalty matrices so trace of inverse is similar to identity
+eigen_coeff_pen <- eigen(cranio_coeff_S_combo[[2]],
+                         symmetric = T, only.values = T)$values
+
+scale_coeff_penalty <- sum(
+  1 / eigen_coeff_pen[which(abs(eigen_coeff_pen) > 1e-10)]
+) / sum(eigen_coeff_pen != 0)
 
 cranio_coeff_S_combo[-1] <- map(cranio_coeff_S_combo[-1], ~ .x * scale_coeff_penalty)
 
@@ -58,7 +62,6 @@ save(cranio_coeff_ingredients,
      file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
 
 # Run Gibbs sampler for coefficient models --------------------------------
-
 
 # Set 1 covariate as outcome
 # - (plotted above, should be lower for sagittal and higher for metopic)

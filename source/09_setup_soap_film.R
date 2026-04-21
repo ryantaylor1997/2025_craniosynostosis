@@ -78,6 +78,15 @@ cranio_soap <- smoothCon(
 # Keep the actual smooth list
 cranio_soap <- cranio_soap[[1]]
 
+# Scale penalty matrices so trace of inverse is similar to identity matrix
+eigen_soap_pen <- map(cranio_soap$S,
+                      ~eigen(., symmetric = T, only.values = T)$values)
+
+scale_soap_pen <- map_dbl(eigen_soap_pen,
+                          ~sum(1 / .[which(abs(.) > 1e-10)]) / sum(. != 0))
+
+cranio_soap$S <- map2(cranio_soap$S, scale_soap_pen,  ~ .x * .y)
+
 # Save soap film object
 save(cranio_soap,
      file = here::here("analysis", "intermediate", "soap_object.rda"))
