@@ -46,10 +46,12 @@ cranio_joint <- hierarchical_penalized_gibbs(
 )
 
 save(cranio_joint,
-     file = here::here("analysis", "intermediate", "joint_model_fit.rda"))
+     file = here::here("analysis", "intermediate",
+                       paste0("joint_model_fit_", format(Sys.time(), "%Y-%m-%d"), ".rda")))
 
 } else {
-  load(file = here::here("analysis", "intermediate", "joint_model_fit.rda"))
+  load(file = here::here("analysis", "intermediate",
+                         paste0("joint_model_fit_", FIT_LOAD_DATE, ".rda")))
 }
 
 
@@ -184,7 +186,9 @@ basis_sample <- cranio_soap$X[sample_points,]
 
 # Calculate estimated outcomes for each set of estimated gammas
 joint_outcomes_full <- simplify2array(
-  apply(joint_new_gammas, ~tcrossprod(.x, basis_sample), simplify = F))
+  apply(joint_new_gammas, 3,
+        function(x){ tcrossprod(x, basis_sample) },
+        simplify = F))
 
 # Take mean and 95% credible interval(?) from these estimates
 joint_outcomes_est <- apply(joint_outcomes_full, c(1, 2),

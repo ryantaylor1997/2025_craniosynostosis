@@ -140,8 +140,10 @@ DO_PRELIM_MODEL_FUSION <- F
 DO_INDIV_SOAPS <- F
 DO_JOINT_FIT <- F
 
+FIT_LOAD_DATE <- "2026-04-21"
+
 # Set a flag for what not to delete
-RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_"
+RM_IGNORE <- "DO|IGNORE|FOLDER|cranio|_dict|so_|_DATE"
 ```
 
 ```{r}

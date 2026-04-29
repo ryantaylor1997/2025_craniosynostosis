@@ -58,7 +58,7 @@ scale_coeff_penalty <- sum(
 cranio_coeff_S_combo[-1] <- map(cranio_coeff_S_combo[-1], ~ .x * scale_coeff_penalty)
 
 # Save intermediate steps to share
-save(cranio_coeff_ingredients,
+save(cranio_coeff_ingredients, scale_coeff_penalty,
      file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
 
 # Run Gibbs sampler for coefficient models --------------------------------

@@ -100,10 +100,10 @@ rm(list = ls()); gc(verbose = F)
 # if(!require("pacman")) install.packages("pacman")
 pacman::p_load(
   # Specialty
-  itsadug, spdep, concaveman,
+  itsadug, spdep, concaveman, sf,
   
   # Bayes
-  mvtnorm,
+  mvtnorm, coda,
   
   # Format
   latex2exp, table1, gtsummary,
@@ -113,7 +113,7 @@ pacman::p_load(
   mgcv,
   
   # Useful extensions
-  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS, ggh4x,
+  gtools, readxl, data.table, reshape2, ggridges, Matrix, MASS, ggh4x, gamair,
   
   # Basics
   DescTools, tidyverse, magrittr, janitor, glue, skimr,
@@ -138,6 +138,9 @@ source(here("source", "mv_normal_matrix_fn.R"))
 
 ```{r}
 #| label: data
+
+sim_date <- "2026-04-07"
+model_date <- "2026-04-21"
 
 # Load image-level data
 cranio_sub <- readRDS(file = here::here("analysis", "intermediate",
@@ -169,9 +172,6 @@ load(file = here::here("analysis", "intermediate", "soap_object.rda"))
 load(file = here::here("analysis", "intermediate",
                          paste0("simulation_demographics.rda")))
 
-
-sim_date <- "2026-04-07"
-
 # Output from the most recent Gibbs sampler (hierarchy_test)
 load(file = here::here("analysis", "intermediate",
                        paste0("hierachical_test_",
@@ -185,7 +185,10 @@ load(file = here::here("analysis", "intermediate",
                               ".rda")))
 
 # Load joint model run (cranio_joint)
-load(file = here::here("analysis", "intermediate", "joint_model_fit.rda"))
+load(file = here::here("analysis", "intermediate", 
+                       paste0("joint_model_fit_",
+                       model_date,
+                       ".rda")))
 
 # Load region object (matrix_region)
 load(file = here::here("analysis", "intermediate", "region_shape_object.rda"))
@@ -529,6 +532,89 @@ ggsave("../results/2026 ENAR Figures/basis_interior.png",
        height = 2, width = 8, units = "in")
 ```
 
+## Plot Aral Sea example
+
+```{r}
+#| label: aral-example
+
+# Load aral sea chloropyll data
+data(aral); data(aral.bnd)
+
+# Convert to spatial for easier plotting
+aral_bound <- aral.bnd %>% 
+  as.data.frame() %>% 
+  st_as_sf(coords = c("lon", "lat"), remove = F)
+
+aral_bound <- bind_rows(aral_bound, slice(aral_bound, 1)) %>% 
+  st_combine() %>% 
+  st_cast("POLYGON")
+
+aral_sf <- aral %>% 
+  st_as_sf(coords = c("lon", "lat"), remove = F)
+
+# Plot data
+aral_data_plot <- ggplot() +
+  geom_sf(data = aral_bound, fill = NA) +
+  geom_sf(data = aral_sf, aes(color = chl)) +
+  scale_color_viridis_c() +
+  labs(x = NULL, y = NULL, color = "Chlorophyll") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Make knots
+knot_axis_num <- 5
+
+aral_grid <- expand.grid(
+  "lon" = seq(min(aral$lon), max(aral$lon), length.out = knot_axis_num),
+  "lat" = seq(min(aral$lat), max(aral$lat), length.out = knot_axis_num)
+)
+
+aral_grid_all <- aral_grid %>%
+  st_as_sf(coords = c("lon", "lat"))
+
+# Crop to cranial boundary
+aral_grid_knots <- aral_grid %>%
+  st_as_sf(coords = c("lon", "lat")) %>%
+  st_filter(st_buffer(aral_bound, -0.01), .predicate = st_covered_by)
+
+aral_k <- aral_grid_knots %>% 
+  st_coordinates() %>%
+  as_tibble() %>%
+  rename(lon = X, lat = Y)
+
+# Fit soap film
+aral_soap <- gam(chl ~ s(lon, lat, 
+                         k=30,
+                         bs = "so",
+                         xt = list(bnd = list(aral.bnd))),
+                         knots = aral_k, data = aral)
+
+# Predict on regular grid
+
+new_aral <- st_make_grid(aral_bound, 
+                         n = 200,
+                         what = "centers") %>% 
+  as_tibble() %>% 
+  st_as_sf() %>% 
+  mutate(lon = st_coordinates(geometry)[,1],
+         lat = st_coordinates(geometry)[,2])
+
+new_aral %<>% mutate(pred = predict(aral_soap, new_aral))
+
+aral_preds <- ggplot() +
+  geom_sf(data = new_aral, aes(color = pred)) +
+  scale_color_viridis_c() +
+  labs(x = NULL, y = NULL, color = "Pred. Chlorophyll") +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+ggsave("../results/2026 ENAR Figures/aral_predictions.png",
+       aral_preds,
+       height = 5, width = 6, units = "in")
+
+```
+
+
 # Results
 
 ## Load simulation results
@@ -822,4 +908,160 @@ ggsave("../results/2026 ENAR Figures/joint_sag_met_surface.png",
        height = 4, width = 6, units = "in")
 
 ```
+
+## Diagnostics
+
+```{r}
+#| label: diagnostics
+
+# Check timing
+joint_time <- cranio_joint$timing %>%
+  mutate(pct = as.numeric(secs) / last(secs)) %>%
+  arrange(desc(pct))
+
+# Extract values by iteration for trace plots
+# Turn parameters into long table for trace plotting
+joint_gibbs_tr <- imap(
+  # Remove timing from output
+  cranio_joint %>%
+    list_modify("timing" = zap(),
+                "start-stop" = zap()),
+  function(x, xn){
+
+    x_dim <- length(dim(x))
+
+    # Turn array into long format
+    x <- reshape2::melt(x) %>% mutate(param_cat = xn)
+
+    # Rename to identify iterations and parameter numbers
+    if(x_dim == 2){
+
+      x <- rename(x, param_num = Var1, iter = Var2)
+
+    } else if (x_dim == 3){
+
+      x <- rename(x, row_num = Var1, col_num = Var2, iter = Var3)
+
+    }
+
+    x
+  }
+) %>%
+  # Combine
+  list_rbind() %>%
+  # Create ID for parameters to be identified
+  group_by(param_cat) %>%
+  mutate(row_id = str_pad(row_num,
+                          ceiling(log10(max(row_num))),
+                          "left", "0"),
+         col_id = str_pad(col_num,
+                          ceiling(log10(max(col_num))),
+                          "left", "0"),
+         param1_id = str_pad(param_num,
+                             ceiling(log10(max(param_num))),
+                             "left", "0"),
+         is_scalar = if_else(!is.na(max(param_num)) & max(param_num) == 1,
+                             1, 0)) %>%
+  ungroup() %>%
+  # Identify each unique parameter by row and column or by index in matrix
+  mutate(param_id = if_else(is.na(param_num),
+                            paste0(row_id, "_", col_id),
+                            param1_id)) %>%
+  select(-c(row_id, col_id, param1_id)) %>%
+  # Identify burn-in vs. posterior distribution
+  mutate(draw_cat = if_else(str_detect(param_cat, "burn"),
+                            "Burn-In", "Post-Burn"),
+         param_clean = str_remove(param_cat, "burn_")) %>%
+  mutate(parameter = if_else(is_scalar == 1, param_clean,
+                             paste0(param_clean, "_", param_id))) %>%
+  select(-is_scalar)
+
+# Compute effective sizes
+joint_gibbs_effn <- map(
+  cranio_joint[c("sigma_sq", "tau_sq",
+                 "lambda_basis", "lambda_demo")],
+  ~apply(., 1, effectiveSize)) %>% 
+  enframe() %>% 
+  unnest_longer(value) %>% 
+  mutate(name = case_when(
+    name == "lambda_basis" & 
+      lead(name, 1) ==  "lambda_basis" ~ "lambda_c",
+    name == "lambda_basis" ~ "lambda_w",
+    name == "lambda_demo" ~ "lambda_alpha",
+    T ~ name)) %>% 
+  rename(eff_n = value,
+         parameter = name)
+
+# Add to other data
+
+joint_gibbs_tr %<>%
+  mutate(parameter = case_when(
+    parameter == "lambda_basis_1" ~ "lambda_c",
+    parameter == "lambda_basis_2" ~ "lambda_w",
+    parameter == "lambda_demo" ~ "lambda_alpha",
+    T ~ parameter
+  )) %>% 
+  left_join(joint_gibbs_effn)
+
+# Trace plot of sigma
+basis_trace_joint <- ggplot(joint_gibbs_tr %>%
+                             filter(str_detect(parameter, "sigma_sq|lambda_c|lambda_w")),
+                            aes(x = iter, y = value)) +
+  geom_line() +
+  facet_wrap(~interaction(draw_cat, parameter),
+             ncol = 2, scales = "free") +
+  theme_minimal() +
+  labs(title = "Soap Film Variance Traces",
+       x = "Iteration", y = "Value")
+
+# Trace plot of tau
+demo_trace_joint <- ggplot(joint_gibbs_tr %>%
+                            filter(str_detect(parameter, "tau_sq|lambda_alpha"))) +
+  geom_line(aes(x = iter, y = value)) +
+  facet_wrap(~interaction(draw_cat, parameter),
+             ncol = 2, scales = "free") +
+  theme_minimal() +
+  labs(title = "Subject-Level Variance Traces",
+       x = "Iteration", y = "Value")
+
+ggsave("../results/2026 ENAR Figures/joint_basis_trace.png",
+       basis_trace_joint,
+       height = 6, width = 6, units = "in")
+
+ggsave("../results/2026 ENAR Figures/joint_demo_trace.png",
+       demo_trace_joint,
+       height = 6, width = 6, units = "in")
+
+```
+
+```{r}
+#| label: acf-plots
+
+sigma_acf <- acf(cranio_joint$sigma_sq[1,], plot = F)
+
+tau_acf <- acf(cranio_joint$tau_sq[1,], plot = F)
+
+lambda_alpha_acf <- acf(cranio_joint$lambda_demo[1,], plot = F)
+
+acf_df <- bind_rows(
+  with(sigma_acf, data.frame(lag, acf)) %>% mutate(param = "sigma_sq"),
+  with(tau_acf, data.frame(lag, acf)) %>% mutate(param = "tau_sq"),
+  with(lambda_alpha_acf, data.frame(lag, acf)) %>% mutate(param = "lambda_alpha"),
+) %>% 
+  mutate(param = factor(param, levels = c("sigma_sq", "tau_sq", "lambda_alpha")))
+
+ci_line <- c(-1, 1) * qnorm((1-0.95)/2) / sqrt(ncol(cranio_joint$sigma_sq))
+
+acf_plot <- ggplot(acf_df, aes(x = lag, y = acf)) +
+  geom_hline(aes(yintercept = 0)) +
+  geom_segment(aes(xend = lag, yend = 0)) +
+  geom_hline(yintercept = ci_line, linetype = 2, color = 'darkblue') +
+  facet_wrap(~param, nrow = 1) +
+  labs(x = "Lag", y = "ACF")
+
+ggsave("../results/2026 ENAR Figures/acf_example.png",
+       acf_plot,
+       height = 4, width = 6, units = "in")
+```
+
 

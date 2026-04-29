@@ -88,7 +88,7 @@ scale_soap_pen <- map_dbl(eigen_soap_pen,
 cranio_soap$S <- map2(cranio_soap$S, scale_soap_pen,  ~ .x * .y)
 
 # Save soap film object
-save(cranio_soap,
+save(cranio_soap, scale_soap_pen,
      file = here::here("analysis", "intermediate", "soap_object.rda"))
 
 # Create separated soap film matrices -------------------------------------
