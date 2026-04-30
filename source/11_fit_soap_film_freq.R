@@ -1,4 +1,24 @@
 
+# Create separated soap film matrices -------------------------------------
+
+# Define model matrix
+so_X <- cranio_soap$X
+
+# Identify boundary and film penalty matrices
+S_bound0 <- cranio_soap$S[[1]]
+S_film0 <- cranio_soap$S[[2]]
+
+# Identify different parts of penalty matrix
+cols_bound <- which(apply(S_bound0, 2, function(x) sum(x != 0)) != 0)
+cols_film <- which(apply(S_film0, 2, function(x) sum(x != 0)) != 0)
+
+# Get interior "film" design and penalty matrices
+so_X_film <- so_X[, cols_film]
+S_film <- S_film0[cols_film, cols_film]
+
+save(so_X_film,
+     file = here::here("analysis", "intermediate", "design_matrix_interior.rData"))
+
 # Calculate lambda-based constants ----------------------------------------
 
 # Define grid for penalty term optimization
