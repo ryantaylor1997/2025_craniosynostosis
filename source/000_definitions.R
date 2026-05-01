@@ -24,20 +24,19 @@ pacman::p_load(
 library(DevCranio)
 
 # Load my R functions
-source(here("source", "load_matrix_data_fn.R"))
-source(here("source", "obtain_predictions_fn.R"))
-source(here("source", "lm_penalized_gibbs_fn.R"))
-source(here("source", "construct_smooth_ref_code_fns.R"))
-source(here("source", "hierarchical_penalized_gibbs_fn.R"))
-source(here("source", "simulate_data_fn.R"))
-source(here("source", "mv_normal_matrix_fn.R"))
-
+source(here("source", "fn_load_matrix_data.R"))
+source(here("source", "fn_obtain_predictions.R"))
+source(here("source", "fn_lm_penalized_gibbs.R"))
+source(here("source", "fns_construct_smooth_ref_code.R"))
+source(here("source", "fn_hierarchical_penalized_gibbs.R"))
+source(here("source", "fn_simulate_data.R"))
+source(here("source", "fn_mv_normal_matrix.R"))
 
 # Set file paths ----------------------------------------------------------
 
 # Set data folder
-DATA_FOLDER <- here("../data/Lukemire, Joshua's files - data/")
-COVARS_FOLDER <- here("../data/SphericalMaps_database/SphericalMaps_database/")
+DATA_FOLDER <- here(file.path("..", "data", "Lukemire, Joshua's files - data"))
+COVARS_FOLDER <- here(file.path("..", "data", "SphericalMaps_database", "SphericalMaps_database"))
 
 # Set subfolder with image data
 MATRIX_FOLDER <- file.path(DATA_FOLDER, "unsigned_distances")

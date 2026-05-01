@@ -1,66 +1,36 @@
+################################################################################
+### AUTHOR: Ryan Taylor
+### PURPOSE: Summarize region-level regression models
+################################################################################
 
-# Region-level preliminary analysis ---------------------------------------
+source(here("source", "000_definitions.R"))
 
-# Recreate pixel map with region labels
-matrix_region <- cranio_matrix %>%
-  select(row, col, region) %>%
-  distinct() %>%
-  st_as_sf(coords = c("row", "col")) %>%
-  group_by(region) %>%
-  summarize(geometry = st_union(geometry)) %>%
-  ungroup() %>%
-  mutate(geometry = st_convex_hull(geometry)) %>%
-  mutate(centroid = st_centroid(geometry))
+# Load files --------------------------------------------------------------
 
-save(matrix_region, file = here::here("analysis", "intermediate", "region_shape_object.rda"))
+# Load regression models in nested data set ("region_models")
+load(file = here::here("results", "models_region_regressions.rda"))
 
+# Load region spatial data ("region_shape")
+load(file = here("data", "intermediate", "region_shape_object.rda"))
 
-# Run (time-intensive) region-level models --------------------------------
+# Load image-level data ("cranio_clean") to help create prediction data
+load(file = here("data", "cleaned", "obs_data_clean.rda"))
 
-if(DO_PRELIM_MODEL_REGION){
+# Create new data to plot smooth ------------------------------------------
 
-  ## Run models for average pointwise differences in each region
-  region_models <- cranio_matrix %>%
-    # Rearrange to incorporate subject data
-    unnest(data) %>%
-    # Take average in each region for each image
-    group_by(fname, age, sex, fusion_type, region) %>%
-    summarize(diff_avg = mean(diff)) %>%
-    ungroup() %>%
-    # Add fusion indicators
-    left_join(fusion_dict, by = "fusion_type") %>%
-    # Nest region-specific data
-    group_by(region) %>%
-    nest() %>%
-    ungroup() %>%
-    # Fit model with age as a spline (cubic regression basis for fast estimation)
-    mutate(model = map(data,
-                       ~gam(diff_avg ~
-                              fused_Sagittal + fused_Metopic +
-                              fused_RCoronal * fused_LCoronal +
-                              sex + s(age, bs = "cr"),
-                            data = .x, method = "REML")),
-           # Also try linear age
-           model_linear = map(data,
-                              ~lm(diff_avg ~
-                                    fused_Sagittal + fused_Metopic +
-                                    fused_RCoronal * fused_LCoronal +
-                                    sex + age,
-                                  data = .x)))
-
-  saveRDS(
-    region_models,
-    file = here::here("analysis", "intermediate",
-                      "prelim_models_region.rds"))
-
-} else {
-  region_models <- readRDS(
-    file = here::here("analysis", "intermediate",
-                      "prelim_models_region.rds")) }
-
+# Define new data for predictions
+newdata_cranio_age <- tibble(
+  fused_Sagittal = 0,
+  fused_Metopic = 0,
+  fused_RCoronal = 0,
+  fused_LCoronal = 0,
+  sex = 0,
+  age = seq(min(cranio_clean$age),
+            max(cranio_clean$age),
+            length.out = 30)
+)
 
 # Clean output from these region-level models -----------------------------
-
 
 region_models %<>%
   ## Add bicoronal variance to final coefficients; output coefficient summary
@@ -106,17 +76,16 @@ region_models %<>%
                                   arrange(-str_detect(term, "fused")) %>%
                                   mutate(term = fct_inorder(term))))
 
-### Merge model summaries with matrix for plotting
-model_region_matrix <- region_models %>%
+### Merge model summaries with points on a shape for plotting
+region_models_shape <- region_models %>%
   select(region, coeffs_combo_cln) %>%
   unnest(coeffs_combo_cln) %>%
-  full_join(matrix_region, by = "region")
-
+  full_join(region_shape, by = "region")
 
 # Plot Region model output ------------------------------------------------
 
 # Plot parametric coefficients
-plot_region_smooth <- ggplot(model_region_matrix %>% filter(term != "age")) +
+plot_region_smooth <- ggplot(region_models_shape %>% filter(term != "age")) +
   geom_sf(aes(geometry = geometry, fill = estimate_smooth), linewidth = 0) +
   geom_sf_text(aes(geometry = centroid, label = region)) +
   facet_wrap(~term) +
@@ -127,7 +96,7 @@ plot_region_smooth <- ggplot(model_region_matrix %>% filter(term != "age")) +
   theme(legend.position = "bottom")
 
 # Plot parameters from alternate version of the model
-plot_region_linear <- ggplot(model_region_matrix) +
+plot_region_linear <- ggplot(region_models_shape) +
   geom_sf(aes(geometry = geometry, fill = estimate_linear), linewidth = 0) +
   geom_sf_text(aes(geometry = centroid, label = region)) +
   facet_wrap(~term) +
@@ -137,19 +106,9 @@ plot_region_linear <- ggplot(model_region_matrix) +
        fill = "Coefficient") +
   theme(legend.position = "bottom")
 
-### Plot smoothed effect
+# Plot age smooth ---------------------------------------------------------
 
-# Define new data for predictions
-newdata_cranio_age <- tibble(
-  fused_Sagittal = 0,
-  fused_Metopic = 0,
-  fused_RCoronal = 0,
-  fused_LCoronal = 0,
-  sex = 0,
-  age = seq(min(cranio_sub$age),
-            max(cranio_sub$age),
-            length.out = 30)
-)
+### Plot smoothed effect
 
 # Calculate predicted values and Conf Ints
 model_region_smooth <- region_models %>%
@@ -201,3 +160,4 @@ plot_region_smooth_pred <- ggplot(model_region_combo) +
        color = "Region", fill = "Region") +
   theme_minimal() +
   theme(legend.position = "bottom")
+

@@ -1,46 +1,24 @@
+################################################################################
+### AUTHOR: Ryan Taylor
+### PURPOSE: Summarize results from test Bayesian soap film on 1 individual
+################################################################################
 
-# Run Bayesian soap film on 1 individual -----------------------------
+source(here::here("source", "000_definitions.R"))
 
-### Run Gibbs sampler for soap film
 
-# Set data to train on, especially outcome
-data_eg <- so_test_fit %>%
-  filter(fusion_type == "Sagittal") %>%
-  filter(fname == first(fname))
+# Load files --------------------------------------------------------------
 
-y_mx <- data_eg$diff
+# Load test bayesian soap film ("soap_bayes1")
+load(file = here("data", "intermediate", "soap_test_single_obs_bayes.rda"))
 
-# Set penalty matrices
-S_mx <- cranio_soap$S
+# Load the single observation we fit the data on ("data_eg")
+load(file = here("data", "intermediate", "soap_test_single_obs_data.rda"))
 
-# Set default parameters
-def_pars <- c(
-  "beta" = 0.0,
-  "sigma_sq" = var(y_mx),
-  "lambda" = 0.1,
-  "a" = 1.0,
-  "b" = 1.0,
-  "c" = 1.0,
-  "d" = 1.0
-)
+# Load soap film object ("cranio_soap")
+load(file = here("data", "cleaned", "soap_object.rda"))
 
-# Set iterations
-bayes_soap_iters <- 1e3
-
-# Run function
-soap_bayes1 <- lm_penalized_gibbs(
-  y = y_mx, X = so_X, S = S_mx,
-  beta0 = def_pars["beta"],
-  sigmasq0 = def_pars["sigma_sq"],
-  lambda0 = def_pars["lambda"],
-  a_pri = def_pars["a"],
-  b_pri = def_pars["b"],
-  c_pri = def_pars["c"],
-  d_pri = def_pars["d"],
-  iters = bayes_soap_iters,
-  burn_pct = 0.1
-)
-
+# Load consistent scale for plotting ("so_diff_range")
+load(file = here("data", "intermediate", "soap_test_sample_range.rda"))
 
 # Print MCMC diagnostics --------------------------------------------------
 
@@ -74,21 +52,6 @@ soap_bayes1_tr <- imap(
   mutate(draw_cat = if_else(draw == "burn_",
                             "Burn-In", "Post-Burn-In"))
 
-# Add default parameters to this table
-trace_default <- soap_bayes1_tr %>%
-  filter(draw_cat == "Burn-In") %>%
-  distinct(draw_cat, name) %>%
-  filter(!str_detect(name, "beta")) %>%
-  mutate(
-    iter = 0,
-    value = case_when(
-      str_detect(name, "sigma_sq") ~ def_pars["sigma_sq"],
-      str_detect(name, "lambda") ~ def_pars["lambda"],
-      T ~ NA
-    ))
-
-soap_bayes1_tr %<>% bind_rows(trace_default)
-
 # Trace plot of sigma
 sigma_trace <- ggplot(soap_bayes1_tr %>%
                         filter(str_detect(name, "sigma_sq"))) +
@@ -119,13 +82,13 @@ beta_trace <- ggplot(soap_bayes1_tr %>%
 soap_bayes1_betas <- colMeans(soap_bayes1$beta)
 
 # Calculate predictions from these coefficients
-soap_bayes1_preds <- so_X %*% soap_bayes1_betas
+soap_bayes1_preds <- cranio_soap$X %*% soap_bayes1_betas
 
 # Add predictions to data
 data_eg %<>% mutate(fit_bayes = as.numeric(soap_bayes1_preds))
 
 data_toplot <- data_eg %>%
-  select(row, col, diff, fit_gcv = fit, fit_bayes) %>%
+  select(row, col, diff, fit_bayes) %>%
   pivot_longer(-c(row, col))
 
 # Plot truth and predictions from Bayesian example

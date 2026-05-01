@@ -1,24 +1,39 @@
+################################################################################
+### AUTHOR: Ryan Taylor
+### PURPOSE: Summarize results of test Bayesian GAM on one basis coefficient
+################################################################################
 
-# Load GCV-based coefficients ---------------------------------------------
+source(here::here("source", "000_definitions.R"))
 
-## Load all coefficients previously fit, along with demographics
-gcv_coeffs <- read_csv(here::here("analysis", "intermediate", "individual_soap_coeffs.csv"))
+# Load files --------------------------------------------------------------
 
-cranio_coeff_df <- cranio_sub %>%
-  left_join(gcv_coeffs %>% select(fname, matches("beta")))
+# Load model fit on 1 coefficient ("coeff_bayes1", "coeff_y", "def_pars_coeff")
+load(file = here("results", "obs_level_test_coefficient_model.rda"))
+
+# Load all coefficients fit with GCV, with demographics ("cranio_models_beta")
+load(file = here("results", "individual_soap_film_fits.rda"))
+
+# Load observation-level design matrix ("obs_smooth_list")
+load(file = here::here("data", "cleaned", "obs_level_smooth.rda"))
+
+# Load color mapping for fusion types ("fusion_color_dict")
+load(file = here("data", "intermediate", "fusion_color_mapping.rda"))
 
 # Visualize some soap film basis coefficients by age ----------------------
 
 # Clean coefficient data to be plotted
-coeff_toplot <- cranio_coeff_df %>%
+coeff_toplot <- cranio_models_beta %>%
   pivot_longer(cols = matches("beta"),
                names_to = "beta_id",
                values_to = "beta_val") %>%
   mutate(beta_num = as.numeric(str_remove_all(beta_id, "beta_")))
 
+# Define selection of basis functions to plot
+plot_knots <- c(1:5, 15:19, 38:42, 65:69)
+
 # Plot selection of coefficients by age
 coeff_plots <- ggplot(coeff_toplot %>%
-                        filter(beta_num %in% so_plot_knots),
+                        filter(beta_num %in% plot_knots),
                       aes(x = age, y = beta_val, color = fusion_type)) +
   geom_point(alpha = 0.2) +
   geom_smooth(alpha = 0.5) +
@@ -28,73 +43,6 @@ coeff_plots <- ggplot(coeff_toplot %>%
   theme_minimal() +
   theme(legend.position = "none") +
   labs(x = "Age (Days)", y = "Soap Basis Coefficient")
-
-
-# Set up coefficient smoother ---------------------------------------------
-
-### Create cubic regression basis splines for age
-
-# Construct smooth without constraint or factor levels
-cranio_coeff_smooth <- s(age, bs = "ts", k = cranio_knots_age)
-
-## Create design and penalty matrices using functions we wrote
-cranio_coeff_ingredients <- construct_reference_smooth(
-  sm = cranio_coeff_smooth, dat = cranio_coeff_df,
-  by_var = "fusion_type", param_formula = ~sex + fusion_type
-)
-
-# Combine suture fusion penalties so we estimate the same lambda
-cranio_coeff_S_combo <- list(cranio_coeff_ingredients$S[[1]],
-                             Reduce("+", cranio_coeff_ingredients$S[-1]))
-
-# Adjust penalty matrices so trace of inverse is similar to identity
-eigen_coeff_pen <- eigen(cranio_coeff_S_combo[[2]],
-                         symmetric = T, only.values = T)$values
-
-scale_coeff_penalty <- sum(
-  1 / eigen_coeff_pen[which(abs(eigen_coeff_pen) > 1e-10)]
-) / sum(eigen_coeff_pen != 0)
-
-cranio_coeff_S_combo[-1] <- map(cranio_coeff_S_combo[-1], ~ .x * scale_coeff_penalty)
-
-# Save intermediate steps to share
-save(cranio_coeff_ingredients, scale_coeff_penalty,
-     file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
-
-# Run Gibbs sampler for coefficient models --------------------------------
-
-# Set 1 covariate as outcome
-# - (plotted above, should be lower for sagittal and higher for metopic)
-coeff_y <- cranio_coeff_df$beta_38
-
-# Set default parameters
-def_pars_coeff <- c(
-  "beta" = 0.0,
-  "sigma_sq" = var(coeff_y) / length(coeff_y),
-  "lambda" = 1e-3,
-  "a" = 1.0,
-  "b" = 1.0,
-  "c" = 1.0,
-  "d" = 1.0
-)
-
-# Set iterations
-bayes_coeff_iters <- 5e3
-
-# Run function
-coeff_bayes1 <- lm_penalized_gibbs(
-  y = coeff_y, X = cranio_coeff_ingredients$X,
-  S = cranio_coeff_S_combo, has_unpenalized = TRUE,
-  beta0 = def_pars_coeff["beta"],
-  sigmasq0 = def_pars_coeff["sigma_sq"],
-  lambda0 = def_pars_coeff["lambda"],
-  a_pri = def_pars_coeff["a"],
-  b_pri = def_pars_coeff["b"],
-  c_pri = def_pars_coeff["c"],
-  d_pri = def_pars_coeff["d"],
-  iters = bayes_coeff_iters,
-  burn_pct = 0.1
-)
 
 # Visualize MCMC diagnostics ----------------------------------------------
 
@@ -131,21 +79,6 @@ coeff_bayes1_tr <- imap(
          param_num = as.numeric(str_extract(name, "[0-9]+"))) %>%
   mutate(param_num = coalesce(param_num, 1))
 
-# Add default parameters to this table
-trace_coeff_default <- coeff_bayes1_tr %>%
-  filter(draw_cat == "Burn-In") %>%
-  distinct(draw_cat, name, param_num) %>%
-  mutate(
-    iter = 0,
-    value = case_when(
-      str_detect(name, "sigma_sq") ~ def_pars_coeff["sigma_sq"],
-      str_detect(name, "lambda") ~ def_pars_coeff["lambda"],
-      str_detect(name, "beta") ~ def_pars_coeff["beta"],
-      T ~ NA
-    ))
-
-coeff_bayes1_tr %<>% bind_rows(trace_coeff_default)
-
 # Trace plot of sigma
 sigma_trace_coeff <- ggplot(coeff_bayes1_tr %>%
                               filter(str_detect(name, "sigma_sq"))) +
@@ -174,7 +107,7 @@ beta_trace_coeff <- ggplot(coeff_bayes1_tr %>%
 ## Create new data
 
 # Create data shell
-coeff_newdata <- cranio_coeff_df %>%
+coeff_newdata <- cranio_models_beta %>%
   mutate(min_age= min(age),
          max_age = max(age)) %>%
   distinct(fusion_type, min_age, max_age) %>%
@@ -183,11 +116,11 @@ coeff_newdata <- cranio_coeff_df %>%
   ungroup() %>%
   mutate(sex = list(c(0, 1))) %>%
   unnest(age) %>% unnest(sex) %>%
-  mutate(sex = factor(sex, levels = levels(cranio_coeff_df$sex)))
+  mutate(sex = factor(sex, levels = levels(cranio_models_beta$sex)))
 
 # Convert this to design matrix
-coeff_new_X_list <- map(cranio_coeff_ingredients$smooth,
-                       ~PredictMat(.x, data = coeff_newdata))
+coeff_new_X_list <- map(obs_smooth_list$smooth,
+                        ~PredictMat(.x, data = coeff_newdata))
 
 # Combine to create Normative and add unpenalized terms
 coeff_new_design <- Reduce(
@@ -219,7 +152,7 @@ coeff_bayes1_plot <- ggplot(coeff_newdata %>% filter(sex == 0),
                             aes(x = age, y = est, ymin = ll, ymax = ul)) +
   geom_line(aes(color = fusion_type)) +
   geom_point(inherit.aes = F,
-             data = enframe(cranio_coeff_smooth$xp),
+             data = enframe(obs_smooth_list[[1]]$xp),
              aes(x = value, y = 0),
              fill = "yellow", shape = 23) +
   geom_ribbon(aes(fill = fusion_type), alpha = 0.1) +
@@ -236,4 +169,5 @@ coeff_bayes1_plot <- ggplot(coeff_newdata %>% filter(sex == 0),
 # Add y limit so that patterns are more visible
 coeff_bayes1_plot_lim <- coeff_bayes1_plot +
   coord_cartesian(ylim = max(coeff_y)*c(-0.5, 1.25)) +
-labs(title = "Bayesian Hierarchical Coefficient Functions (Axes Fixed)")
+  labs(title = "Bayesian Hierarchical Coefficient Functions (Axes Fixed)")
+

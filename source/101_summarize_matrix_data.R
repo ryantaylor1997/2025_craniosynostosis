@@ -1,25 +1,33 @@
+################################################################################
+### AUTHOR: Ryan Taylor
+### PURPOSE: Visualize growth data in irregular domain
+################################################################################
+
+source(here("source", "000_definitions.R"))
+
+# Load files --------------------------------------------------------------
+
+# Load file of pixel-level data for all images ("cranio_point_clean")
+load(file = here("data", "cleaned", "point_data_clean.rda"))
+
+# Load file of pixel-level coordinates without large data ("point_coords")
+load(file = here("data", "intermediate", "point_coordinates.rda"))
+
+# Load region spatial data ("region_shape")
+load(file = here("data", "intermediate", "region_shape_object.rda"))
+
+# Load observation-level data ("cranio_clean")
+load(file = here("data", "cleaned", "obs_data_clean.rda"))
+
+# Load color mapping for fusion types ("fusion_color_dict")
+load(file = here::here("data", "intermediate", "fusion_color_mapping.rda"))
 
 # Visualize Regions -------------------------------------------------------
 
-# Create dataset of only region assignment for each pixel
-matrix_region <- cranio_matrix %>%
-  select(row, col, region) %>%
-  distinct()
-
-# Identify regions' centroids for labels
-matrix_region_center <- matrix_region %>%
-  group_by(region) %>%
-  summarize(row_center = mean(row),
-            col_center = mean(col)) %>%
-  ungroup()
-
 # Plot regions
-plot_regions <- ggplot() +
-  geom_raster(data = matrix_region,
-              aes(x = row, y = col, fill = factor(region))) +
-  geom_text(data = matrix_region_center,
-            aes(x = row_center, y = col_center, label = factor(region))) +
-  coord_fixed() +
+plot_regions <- ggplot(region_shape) +
+  geom_sf(aes(geometry = geometry, fill = factor(region)), linewidth = 0) +
+  geom_sf_text(aes(geometry = centroid, label = region)) +
   theme_void() +
   scale_fill_brewer(palette = "Set3", guide = "none") +
   labs(title = "Region Map", fill = "Region")
@@ -27,7 +35,7 @@ plot_regions <- ggplot() +
 # Summary by age ----------------------------------------------------------
 
 # Create dataset of average cell for each fusion
-matrix_fusion <- cranio_matrix %>%
+point_growth_fusion <- cranio_point_clean %>%
   # Extract only fusion type and outcome from nested data
   hoist(data, "fusion_type", "diff") %>%
   select(-c(data, region)) %>%
@@ -38,7 +46,7 @@ matrix_fusion <- cranio_matrix %>%
   ungroup()
 
 # Plot brain map by fusion type
-plot_fusion <- ggplot(matrix_fusion) +
+plot_fusion <- ggplot(point_growth_fusion) +
   geom_raster(aes(x = row, y = col, fill = diff_avg)) +
   facet_wrap(~fusion_type) +
   coord_fixed() +
@@ -48,13 +56,10 @@ plot_fusion <- ggplot(matrix_fusion) +
        fill = "Avg. Growth") +
   theme(legend.position = "bottom")
 
-
-# Summary by age ----------------------------------------------------------
-
-### Investigate age
+# Summary by age (binned) --------------------------------------------------
 
 # Create dataset with fusion and age info
-matrix_age_fusion <- cranio_matrix %>%
+point_growth_fusion_age <- cranio_point_clean %>%
   hoist(data, "fusion_type", "age", "diff") %>%
   select(-c(data, region)) %>%
   unnest_longer(col = c(fusion_type, age, diff)) %>%
@@ -69,7 +74,7 @@ matrix_age_fusion <- cranio_matrix %>%
   ungroup()
 
 # Plot brain map by fusion type and age
-plot_fusion_age <- ggplot(matrix_age_fusion) +
+plot_fusion_age <- ggplot(point_growth_fusion_age) +
   geom_raster(aes(x = row, y = col, fill = diff_avg)) +
   facet_grid(fusion_type ~ age_bin,
              labeller = label_wrap_gen(width = 10)) +
@@ -82,10 +87,10 @@ plot_fusion_age <- ggplot(matrix_age_fusion) +
        fill = "Avg. Growth") +
   theme(legend.position = "bottom")
 
-## Determine sample size for these averages
+## Calculate sample size for these averages
 
 # Count images per fusion and age bin
-size_fusion_age <- cranio_sub %>%
+size_fusion_age <- cranio_clean %>%
   mutate(age_bin = cut(age,
                        breaks = cranio_age_breaks,
                        labels = cranio_age_break_labels,
@@ -95,12 +100,12 @@ size_fusion_age <- cranio_sub %>%
   ungroup() %>%
   pivot_wider(names_from = age_bin, values_from = n, id_cols = fusion_type)
 
-# Age effect --------------------------------------------------------------
+# Summary by age (continuous) ----------------------------------------------
 
-# Check shape of age effect by region and fusion
+# Check shape of continuous age effect by region and fusion
 
-# Summarize by age, region, and fusion type; have option to round to nearest month
-matrix_age_region <- cranio_matrix %>%
+# Summarize by age, region, and fusion type; add option to round to nearest month
+point_growth_age_region <- cranio_point_clean %>%
   hoist(data, "fusion_type", "age", "diff") %>%
   select(-data) %>%
   unnest_longer(col = c(fusion_type, age, diff)) %>%
@@ -109,7 +114,7 @@ matrix_age_region <- cranio_matrix %>%
   summarize(diff_avg = mean(diff)) %>%
   ungroup()
 
-plot_age <- ggplot(matrix_age_region) +
+plot_age_region <- ggplot(point_growth_age_region) +
   # Plot 1 line over age for each region-fusion combo
   geom_smooth(aes(x = age, y = diff_avg,
                   color = fusion_type, fill = fusion_type),
@@ -125,11 +130,10 @@ plot_age <- ggplot(matrix_age_region) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
-
 # Sex effect --------------------------------------------------------------
 
 # Take average pointwise differences in cell by fusion and sex
-matrix_sex_fusion <- cranio_matrix %>%
+point_growth_fusion_sex <- cranio_point_clean %>%
   hoist(data, "fusion_type", "sex", "diff") %>%
   select(-c(data, region)) %>%
   unnest_longer(col = c(fusion_type, sex, diff)) %>%
@@ -139,7 +143,7 @@ matrix_sex_fusion <- cranio_matrix %>%
   ungroup()
 
 # Plot brain map by fusion type and age
-plot_fusion_sex <- ggplot(matrix_sex_fusion) +
+plot_fusion_sex <- ggplot(point_growth_fusion_sex) +
   geom_raster(aes(x = row, y = col, fill = diff_avg)) +
   facet_grid(fusion_type ~ sex,
              labeller = label_wrap_gen(width = 9)) +

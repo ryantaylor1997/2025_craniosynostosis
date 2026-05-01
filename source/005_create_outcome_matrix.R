@@ -7,7 +7,7 @@ source(here::here("source", "000_definitions.R"))
 
 # Load files --------------------------------------------------------------
 
-# Load cleaned data of growth, nested by pixel ("cranio_matrix_clean")
+# Load cleaned data of growth, nested by pixel ("cranio_points_clean")
 load(file = here("data", "cleaned", "point_data_clean.rda"))
 
 # Extract nested growth outcomes ------------------------------------------
@@ -16,7 +16,7 @@ load(file = here("data", "cleaned", "point_data_clean.rda"))
 # Column-bind together to get 1 row for each image / 1 column for each pixel
 growth_mx <- do.call(
   cbind,
-  hoist(cranio_matrix_clean,
+  hoist(cranio_point_clean,
         "data", "diff")$diff
   )
 
@@ -24,4 +24,4 @@ growth_mx <- do.call(
 # Save output -------------------------------------------------------------
 
 save(growth_mx,
-     file = here::here("data", "cleaned", "point_growth_matrix.rda"))
+     file = here("data", "cleaned", "point_growth_matrix.rda"))

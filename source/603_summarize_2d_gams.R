@@ -1,51 +1,40 @@
+################################################################################
+### AUTHOR: Ryan Taylor
+### PURPOSE: Summarize 2D GAM models by fusion type
+################################################################################
 
-# Fusion-level 2D GAMs ----------------------------------------------------
+source(here::here("source", "000_definitions.R"))
 
-if(DO_PRELIM_MODEL_FUSION){
+# Load files --------------------------------------------------------------
 
-  # Run preliminary spatial models
-  fusion_models <- cranio_matrix %>%
-    unnest(data) %>%
-    # Split data by fusion type
-    group_by(fusion_type) %>%
-    nest() %>%
-    ungroup() %>%
-    # Fit model with linear sex effect, smoothed age term, and row-col tensor surface
-    mutate(model = map(data,
-                       ~bam(diff ~ sex + s(age, bs = "cr") +
-                              te(row, col, k=c(8,8)),
-                            data= .x)))
+# Load fusion-specific 2-D GAM models ("fusion_models")
+load(file = here("results", "models_te_fusion.rda"))
 
-  saveRDS(
-    fusion_models,
-    file = here::here("analysis", "intermediate", "prelim_models_fusion_te.rds"))
-} else {
-  fusion_models <- readRDS(
-    file = here::here("analysis", "intermediate", "prelim_models_fusion_te.rds")) }
+# Load shape of surface ("cranio_bound_shape")
+load(file = here("data", "intermediate", "boundary_polygon.rda"))
 
-# Create boundary shape around pixels -------------------------------------
+# Load boundary points ("cranio_bound_points") [comes with "bound_list"]
+load(file = here("data", "intermediate", "boundary_objects.rda"))
 
-# Create polygon around pixels in cranium shape
-cranio_bound_shape <- cranio_matrix %>%
-  distinct(row, col) %>%
-  st_as_sf(coords = c("row", "col")) %>%
-  concaveman(concavity = 1)
+# Load image-level data ("cranio_clean") to help create prediction data
+load(file = here("data", "cleaned", "obs_data_clean.rda"))
 
-# Create boundary as points
-cranio_bound_matrix <- cranio_bound_shape %>%
-  # Add buffer so boundary is beyond data
-  st_buffer(1) %>%
-  # Convert to line
-  st_boundary() %>%
-  # Take points along this line at density = 1 unit
-  st_line_sample(density = 1) %>%
-  st_coordinates() %>%
-  as_tibble() %>%
-  rename(row = X, col = Y) %>%
-  # Add order of appearance in data
-  mutate(appearance_order = 1:n())
+# Load color mapping for fusion types ("fusion_color_dict")
+load(file = here::here("data", "intermediate", "fusion_color_mapping.rda"))
 
-# Predict from GAM --------------------------------------------------------
+# Create new GAM data -----------------------------------------------------
+
+# Define new data for predictions
+newdata_cranio_age <- tibble(
+  fused_Sagittal = 0,
+  fused_Metopic = 0,
+  fused_RCoronal = 0,
+  fused_LCoronal = 0,
+  sex = 0,
+  age = seq(min(cranio_clean$age),
+            max(cranio_clean$age),
+            length.out = 30)
+)
 
 # Set new data for GAM
 newdata_fusiongam <- tibble(
@@ -55,17 +44,23 @@ newdata_fusiongam <- tibble(
   fused_LCoronal = 0,
   sex = 0,
   age = 300,
-  row = list(seq(from = (min(cranio_bound_matrix$row) - 10),
-                 to = (max(cranio_bound_matrix$row) + 10),
+  row = list(seq(from = (min(cranio_bound_points$row) - 10),
+                 to = (max(cranio_bound_points$row) + 10),
                  length.out = 50)),
-  col = list(seq(from = (min(cranio_bound_matrix$col) - 10),
-                 to = (max(cranio_bound_matrix$col) + 10),
+  col = list(seq(from = (min(cranio_bound_points$col) - 10),
+                 to = (max(cranio_bound_points$col) + 10),
                  length.out = 50))
 ) %>%
   unnest_longer(row) %>% unnest_longer(col)
 
+# Add row and column to age smooth new data (to be cancelled out)
+newdata_age_gam <- newdata_cranio_age %>%
+  mutate(row = 0, col = 0)
+
+# Predict on new data -----------------------------------------------------
+
+# Predict from this model for spatial pattern
 fusion_models  %<>%
-  # Predict from this model for spatial pattern (1 year old male)
   mutate(pred_data = map(
     model,
     ~obtain_predictions(.x, newdata = newdata_fusiongam)))
@@ -76,12 +71,6 @@ fusion_model_summ <- fusion_models %>%
   unnest(pred_data)
 
 # Plot GAM predictions ----------------------------------------------------
-
-# Determine true data scale range
-matrix_diff_range <- cranio_matrix %>%
-  unnest(data) %>%
-  summarize(low_pct = quantile(diff, 0.1, na.rm = T),
-            max = max(diff, na.rm = T))
 
 # Plot these predictions (in a rectangle shape with brain mask)
 plot_model_fusion <- ggplot() +
@@ -103,10 +92,6 @@ ggsave(here::here("results", "tensor_smooth_fusion.png"),
        height = 4, width = 8, units = "in")
 
 # Predict smoothed age effect ---------------------------------------------
-
-# Add row and column to age smooth new-data (to be cancelled out)
-newdata_age_gam <- newdata_cranio_age %>%
-  mutate(row = 0, col = 0)
 
 ## Extract age smoothed predictions
 model_fusion_smooth <- fusion_models %>%
@@ -141,3 +126,5 @@ model_fusion_params <- fusion_models %>%
   mutate(params = map(model, ~tidy(., parametric = TRUE))) %>%
   select(-model) %>%
   unnest(params)
+
+

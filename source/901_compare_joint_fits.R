@@ -3,27 +3,30 @@
 ### PURPOSE: Compare Joint Model Fits
 ################################################################################
 
-rm(list = ls()); gc()
+source(here::here("source", "000_definitions.R"))
 
-# Load previous runs
+# Load files --------------------------------------------------------------
 
-load(file = here::here("analysis", "intermediate",
+# Load previous runs ("cranio_joint")
+load(file = here("analysis", "intermediate",
                        "joint_model_fit_2026-04-21.rda"))
 
 cranio_joint_recent <- cranio_joint
 
-load(file = here::here("analysis", "intermediate",
+load(file = here("analysis", "intermediate",
                        "joint_model_fit 03.14.rda"))
 
 cranio_joint_prev <- cranio_joint
 
 rm(cranio_joint); gc()
 
-# Load soap film object for penalty scales
-load(file = here::here("analysis", "intermediate", "soap_object.rda"))
+# Load soap film penalty scales ("soap_pen_scale")
+load(file = here("data", "intermediate", "soap_object.rda"))
 
-# Load demographic smooth object for scale terms
-load(file = here::here("analysis", "intermediate", "demographics_model_matrices.rda"))
+# Load observation-level smooth scale terms ("obs_pen_scale")
+load(file = here("data", "intermediate", "obs_level_penalty_scales.rda"))
+
+# Summarize results -------------------------------------------------------
 
 # Collect posterior mean values
 
@@ -51,7 +54,8 @@ model_summ_rec <- map(cranio_joint_recent[c("sigma_sq",
   ungroup() %>%
   mutate(model = "recent")
 
-scales <- c(scale_soap_pen, scale_coeff_penalty)
+# Bring in penalty scales
+scales <- c(soap_pen_scale, obs_pen_scale)
 
 model_summ_scale <- model_summ_prev %>%
   filter(str_detect(name, "lambda")) %>%
