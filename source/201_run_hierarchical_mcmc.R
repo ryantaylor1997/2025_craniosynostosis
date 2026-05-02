@@ -3,7 +3,7 @@
 ### PURPOSE: Run joint Gibbs sampler function on data
 ################################################################################
 
-suppressPackageStartupMessages(
+suppressMessages(
   source(here::here("source", "000_definitions.R"))
   )
 

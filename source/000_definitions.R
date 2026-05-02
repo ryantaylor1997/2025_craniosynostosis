@@ -8,20 +8,22 @@ rm(list = ls()); gc()
 # Load packages -----------------------------------------------------------
 pacman::p_load(
   concaveman, # Special function for concave hull
-  mvtnorm, # Good multivariate normal
+  mvtnorm, # Good multivariate normal functions
+  coda, # MCMC diagnostics
   gtsummary, # Summary tables
   broom, # Model tidying
   mgcv, # GAM Modeling
   Matrix, MASS, reshape2, # Useful matrix operations / generalized inverse
   ggridges, ggh4x, ggpubr, ggpmisc, # Useful extensions to ggplot
   gtools, readxl, # Extra programming tools
+  Rcpp, RcppEigen, # C++ programming tools
   tidyverse, magrittr, janitor, knitr, kableExtra, here # Basics
 )
 
 # Load functions ----------------------------------------------------------
 
 # Load my Rcpp functions
-library(DevCranio)
+suppressWarnings(sourceCpp(here("source", "fns_mcmc_algebra.cpp")))
 
 # Load my R functions
 source(here("source", "fn_load_matrix_data.R"))
