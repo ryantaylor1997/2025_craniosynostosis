@@ -3,22 +3,28 @@
 ### PURPOSE: Run joint Gibbs sampler function on data
 ################################################################################
 
-source(here::here("source", "000_definitions.R"))
+suppressPackageStartupMessages(
+  source(here::here("source", "000_definitions.R"))
+  )
+
+wd = getwd()
+
+if(substring(wd, 2, 6) == "Users"){
+  doLocal = TRUE
+}else{
+  doLocal = FALSE
+}
 
 # Load files --------------------------------------------------------------
 
-# Load outcome matrix ("growth_mx")
-load(file = here("data", "cleaned", "point_growth_matrix.rda"))
+path_start <- if(doLocal){ "data" } else { "../data_clean" }
 
-# Load soap film object ("cranio_soap")
-load(file = here("data", "cleaned", "soap_object.rda"))
+# Load all inputs for joint model
+# ("cranio_soap", "obs_smooth_list", "growth_mx")
+load(file = here(path_start, "cleaned", "joint_model_inputs.rda"))
 
-# Load observation-level smooth design matrix and penalty ("obs_smooth_list")
-load(file = here::here("data", "cleaned", "obs_level_smooth.rda"))
-
-cranio_growth_mx <- Matrix(cranio_growth_mx)
-
-if(DO_JOINT_FIT){
+# Convert large outcome matrix to sparser format
+growth_mx <- Matrix(growth_mx)
 
 # Run hierarchical model
 cranio_joint <- hierarchical_penalized_gibbs(
