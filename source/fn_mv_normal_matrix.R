@@ -30,15 +30,8 @@ rmvnorm_Matrix <- function(n,
   } else { # Second, where sigma is a format from Matrix package
 
     # Take Cholesky decomposition using Matrix package
-    sigma_ch <- Cholesky(sigma, perm = T, LDL = F)
-
-    # Create constituent factorization matrices
-    # - Documentation says these are "P1, L s.t. A = P'LL'P"
-    ch_expand <- expand2(sigma_ch, LDL = F)
-
-    # Combine 2nd factor matrix and permutation matrix to get square root matrix
-    sigma_sqrt <- ch_expand[["L."]] %*% ch_expand[["P1"]]
-
+    # - Documentation says this is "L' s.t. A = LL'"
+    sigma_sqrt <- Matrix::chol(sigma, pivot = F)
   }
 
   ## Convert mean vector to a matrix the size of the random draw
