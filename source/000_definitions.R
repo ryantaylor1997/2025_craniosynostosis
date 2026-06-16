@@ -7,6 +7,7 @@ rm(list = ls()); gc()
 
 # Load packages -----------------------------------------------------------
 pacman::p_load(
+  sf, # Spatial operations
   concaveman, # Special function for concave hull
   mvtnorm, # Good multivariate normal functions
   coda, # MCMC diagnostics

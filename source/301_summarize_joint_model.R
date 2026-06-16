@@ -7,13 +7,32 @@ source(here::here("source", "000_definitions.R"))
 
 # Load files --------------------------------------------------------------
 
-
-# Load most recent joint model fit
-FIT_DATE <- "2026-05-01"
+# Load most recent joint model fit ("cranio_joint")
+FIT_DATE <- "2026-06-11"
 load(file = here("results",
                  paste0("joint_model_fit_",
                         format(Sys.time(), "%Y-%m-%d"),
                         ".rda")))
+
+# Load data set of points with row-column coordinates ("point_coords")
+load(file = here("data", "intermediate", "point_coordinates.rda"))
+
+# Load region object ("matrix_region")
+load(file = here("analysis", "intermediate",
+                 "region_shape_object.rda"))
+
+# Load cleaned / filtered subject-level data ("cranio_clean")
+load(file = here("data", "cleaned", "obs_data_clean.rda"))
+
+# Load observation-level smooth design matrix and penalty ("obs_smooth_list")
+load(file = here("data", "cleaned", "obs_level_smooth.rda"))
+
+# Load soap film object ("cranio_soap")
+load(file = here("data", "cleaned", "soap_object.rda"))
+
+# Load consistent mapping from fusion to colors ("fusion_color_dict")
+load(file = here("data", "intermediate",
+                 "fusion_color_mapping.rda"))
 
 # Check MCMC output -------------------------------------------------------
 
@@ -80,34 +99,38 @@ joint_gibbs_tr <- imap(
   select(-is_scalar)
 
 # Trace plot of sigma
-basis_trace_joint <- ggplot(joint_gibbs_tr %>%
-                              filter(str_detect(parameter, "sigma_sq|lambda_basis"))) +
+soap_trace_joint <- ggplot(joint_gibbs_tr %>%
+                             filter(str_detect(parameter, "sigma_sq|lambda_basis"))) +
   geom_line(aes(x = iter, y = value)) +
   facet_wrap(~interaction(draw_cat, parameter),
              ncol = 2, scales = "free") +
   labs(title = "Soap Film Variance Traces")
 
+ggsave(here("results", paste0(FIT_DATE, "_trace_soap.png")),
+       soap_trace_joint,
+       height = 6, width = 6, units = "in")
+
 # Trace plot of tau
-demo_trace_joint <- ggplot(joint_gibbs_tr %>%
-                             filter(str_detect(parameter, "tau_sq|lambda_demo"))) +
+obs_trace_joint <- ggplot(joint_gibbs_tr %>%
+                            filter(str_detect(parameter, "tau_sq|lambda_demo"))) +
   geom_line(aes(x = iter, y = value)) +
   facet_wrap(~interaction(draw_cat, parameter),
              ncol = 2, scales = "free") +
-  labs(title = "Demographic Variance Traces")
+  labs(title = "Observation-Level Variance Traces")
 
+ggsave(here("results", paste0(FIT_DATE, "_trace_obs.png")),
+       obs_trace_joint,
+       height = 6, width = 6, units = "in")
 
 # Visualize growth by age and suture fusion type --------------------------
 
-# Load region object (matrix_region)
-load(file = here::here("analysis", "intermediate", "region_shape_object.rda"))
-
 # Find nearest point in image data to each region's centroid
-mx_pt_shape <- st_as_sf(so_matrix_pts, coords = c("row", "col"))
+mx_pt_shape <- st_as_sf(point_coords, coords = c("row", "col"))
 
 sample_points <- st_nearest_feature(matrix_region$centroid, mx_pt_shape)
 
 ## Generate sample data
-joint_newdata <- cranio_sub %>%
+joint_newdata <- cranio_clean %>%
   mutate(min_age = min(age),
          max_age = max(age)) %>%
   distinct(fusion_type, min_age, max_age) %>%
@@ -117,12 +140,12 @@ joint_newdata <- cranio_sub %>%
   select(-c(min_age, max_age)) %>%
   mutate(sex = 0) %>%
   unnest(age) %>%
-  mutate(sex = factor(sex, levels = levels(cranio_sub$sex)),
-         fusion_type = factor(fusion_type, levels = levels(cranio_sub$fusion_type)))
+  mutate(sex = factor(sex, levels = levels(cranio_clean$sex)),
+         fusion_type = factor(fusion_type, levels = levels(cranio_clean$fusion_type)))
 
 # Convert sample data to design matrix
 # Create predictions by fusion type
-joint_new_X_list <- map(cranio_coeff_ingredients$smooth,
+joint_new_X_list <- map(obs_smooth_list$smooth,
                         ~PredictMat(.x, data = joint_newdata))
 
 # Combine to create Normative and add unpenalized terms
@@ -195,8 +218,13 @@ joint_estimates_plot <- ggplot(joint_newdata_est %>%
                        select(fusion_type, alpha) %>%
                        deframe()) +
   theme_minimal() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom") +
+  labs(x = "Age", y = "Median Estimate",
+       color = "Fusion", alpha = "Fusion")
 
+ggsave(here("results", paste0(FIT_DATE, "_pred_paths.png")),
+       joint_estimates_plot,
+       height = 6, width = 10, units = "in")
 
 # Plot sample predictions from model --------------------------------------
 
@@ -217,7 +245,7 @@ joint_outcomes_surface <- tcrossprod(joint_gammas_surface_median, cranio_soap$X)
 joint_outcomes_surface_df <- reshape2::melt(joint_outcomes_surface) %>%
   rename(row_num = Var1, cell_num = Var2) %>%
   left_join(joint_surface_data) %>%
-  left_join(so_matrix_pts %>% mutate(cell_num = row_number())) %>%
+  left_join(point_coords %>% mutate(cell_num = row_number())) %>%
   mutate(age_header = "Age (Days)")
 
 # Plot outcomes by suture fusion and age
@@ -236,6 +264,10 @@ outcomes_plot_sag <- ggplot(joint_outcomes_surface_df %>%
         strip.text.x = element_text(size = 10,
                                     margin = margin(t = 2, b = 3)))
 
+ggsave(here("results", paste0(FIT_DATE, "_pred_shapes_sag.png")),
+       outcomes_plot_sag,
+       height = 2, width = 6, units = "in")
+
 outcomes_plot <- ggplot(joint_outcomes_surface_df) +
   geom_raster(aes(x = row, y = col, fill = value)) +
   facet_nested(fusion_type ~ age_header + age,
@@ -249,3 +281,7 @@ outcomes_plot <- ggplot(joint_outcomes_surface_df) +
   theme(legend.position = "bottom",
         strip.text.x = element_text(size = 10,
                                     margin = margin(t = 2, b = 3)))
+
+ggsave(here("results", paste0(FIT_DATE, "_pred_shapes_all.png")),
+       outcomes_plot,
+       height = 6, width = 6, units = "in")
