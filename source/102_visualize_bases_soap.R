@@ -95,6 +95,10 @@ soap_basis_cyclic <- ggplot(data = basis_df %>%
   theme(legend.position = "bottom") +
   guides(color = guide_legend(nrow = 2, byrow = T))
 
+ggsave(here("results", "plot_bases_boundary_1d.png"),
+       soap_basis_cyclic,
+       height = 6, width = 6, units = "in")
+
 # Plot boundary-induced functions -----------------------------------------
 
 # Plot boundary-induced 2-dimensional basis functions
@@ -108,6 +112,10 @@ soap_basis_bd <- ggplot() +
   theme_void() +
   theme(legend.position = "bottom") +
   facet_wrap(~basis_fn)
+
+ggsave(here("results", "plot_bases_boundary_2d.png"),
+       soap_basis_bd,
+       height = 6, width = 6, units = "in")
 
 # Plot some interior functions --------------------------------------------
 
@@ -128,3 +136,39 @@ soap_basis_int <- ggplot() +
   theme_void() +
   theme(legend.position = "bottom") +
   facet_wrap(~basis_fn, ncol = 5)
+
+ggsave(here("results", "plot_bases_interior.png"),
+       soap_basis_int,
+       height = 6, width = 6, units = "in")
+
+# Plot penalty matrices ---------------------------------------------------
+
+basis_s <- map(
+  1:length(cranio_soap$S),
+  ~ cranio_soap$S[[.x]] %>%
+    reshape2::melt() %>%
+    rename(row = Var1, col = Var2) %>%
+    mutate(index = .x)
+) %>%
+  bind_rows()
+
+basis_s_plot <- basis_s %>%
+  filter(value != 0) %>%
+  group_split(index) %>%
+  map(
+    ~ggplot(., aes(x = col, y = -row, fill = value)) +
+      geom_tile() +
+      facet_wrap(~index, nrow = 1) +
+      scale_fill_gradient2() +
+      scale_x_continuous(breaks = scales::breaks_extended(10)) +
+      scale_y_continuous(breaks = scales::breaks_extended(10)) +
+      theme_minimal() +
+      theme(legend.position = "bottom") +
+      coord_fixed()
+  ) %>%
+  ggarrange(plotlist = ., nrow = 1) %>%
+  annotate_figure(top = "Soap Film Penalty Matrices")
+
+ggsave(here("results", "plot_penalty_soap.png"),
+       basis_s_plot,
+       height = 6, width = 6, units = "in")

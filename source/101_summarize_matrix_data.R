@@ -32,6 +32,10 @@ plot_regions <- ggplot(region_shape) +
   scale_fill_brewer(palette = "Set3", guide = "none") +
   labs(title = "Region Map", fill = "Region")
 
+ggsave(here("results", "plot_region_locs.png"),
+       plot_regions,
+       height = 6, width = 6, units = "in")
+
 # Summary by age ----------------------------------------------------------
 
 # Create dataset of average cell for each fusion
@@ -55,6 +59,10 @@ plot_fusion <- ggplot(point_growth_fusion) +
   labs(title = "Fusion Average Growth",
        fill = "Avg. Growth") +
   theme(legend.position = "bottom")
+
+ggsave(here("results", "plot_fusion_avg.png"),
+       plot_fusion,
+       height = 6, width = 6, units = "in")
 
 # Summary by age (binned) --------------------------------------------------
 
@@ -86,6 +94,10 @@ plot_fusion_age <- ggplot(point_growth_fusion_age) +
   labs(title = "Fusion - Age Average Growth",
        fill = "Avg. Growth") +
   theme(legend.position = "bottom")
+
+ggsave(here("results", "plot_fusion_age_avg.png"),
+       plot_fusion_age,
+       height = 6, width = 6, units = "in")
 
 ## Calculate sample size for these averages
 
@@ -130,6 +142,10 @@ plot_age_region <- ggplot(point_growth_age_region) +
   theme_minimal() +
   theme(legend.position = "bottom")
 
+ggsave(here("results", "plot_region_age_smooth.png"),
+       plot_age_region,
+       height = 6, width = 6, units = "in")
+
 # Sex effect --------------------------------------------------------------
 
 # Take average pointwise differences in cell by fusion and sex
@@ -155,3 +171,7 @@ plot_fusion_sex <- ggplot(point_growth_fusion_sex) +
   labs(title = "Fusion-Sex Average Growth",
        fill = "Avg. Growth") +
   theme(legend.position = "bottom")
+
+ggsave(here("results", "plot_fusion_sex_avg.png"),
+       plot_fusion_sex,
+       height = 6, width = 6, units = "in")

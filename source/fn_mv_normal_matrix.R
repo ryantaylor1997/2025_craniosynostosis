@@ -37,7 +37,7 @@ rmvnorm_Matrix <- function(n,
   ## Convert mean vector to a matrix the size of the random draw
 
 
-  if(is.null(dim(mean)) | min(dim(mean)) == 1){
+  if(is.null(dim(mean)) || min(dim(mean)) == 1){
     # First, the case when mean is a vector or 1-dim matrix
     mean_mx <- Matrix(rep(mean, n), nrow = n, byrow = TRUE)
   } else if(nrow(mean) == n) {

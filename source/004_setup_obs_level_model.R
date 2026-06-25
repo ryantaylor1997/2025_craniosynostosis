@@ -13,7 +13,7 @@ load(file = here("data", "cleaned", "obs_data_clean.rda"))
 # Construct smooth --------------------------------------------------------
 
 # Construct smooth without constraint or factor levels
-age_smooth <- s(age, bs = "ts", k = cranio_knots_age)
+age_smooth <- s(age, bs = age_bs, k = cranio_knots_age)
 
 ## Create design and penalty matrices using functions we wrote
 obs_smooth_by_fusion <- construct_reference_smooth(

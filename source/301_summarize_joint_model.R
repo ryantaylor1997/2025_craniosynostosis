@@ -8,17 +8,16 @@ source(here::here("source", "000_definitions.R"))
 # Load files --------------------------------------------------------------
 
 # Load most recent joint model fit ("cranio_joint")
-FIT_DATE <- "2026-06-11"
+FIT_DATE <- "2026-06-17"
+
 load(file = here("results",
-                 paste0("joint_model_fit_",
-                        format(Sys.time(), "%Y-%m-%d"),
-                        ".rda")))
+                 paste0("joint_model_fit_", FIT_DATE, ".rda")))
 
 # Load data set of points with row-column coordinates ("point_coords")
 load(file = here("data", "intermediate", "point_coordinates.rda"))
 
-# Load region object ("matrix_region")
-load(file = here("analysis", "intermediate",
+# Load region object ("region_shape")
+load(file = here("data", "intermediate",
                  "region_shape_object.rda"))
 
 # Load cleaned / filtered subject-level data ("cranio_clean")
@@ -127,7 +126,7 @@ ggsave(here("results", paste0(FIT_DATE, "_trace_obs.png")),
 # Find nearest point in image data to each region's centroid
 mx_pt_shape <- st_as_sf(point_coords, coords = c("row", "col"))
 
-sample_points <- st_nearest_feature(matrix_region$centroid, mx_pt_shape)
+sample_points <- st_nearest_feature(region_shape$centroid, mx_pt_shape)
 
 ## Generate sample data
 joint_newdata <- cranio_clean %>%

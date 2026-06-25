@@ -1,3 +1,91 @@
+### SIMPLE APPROACH: Use smoothCon to construct design and penalty, then combine
+construct_reference_smooth <- function(sm, dat, by_var,
+                                       param_formula = NULL){
+
+  # Add "by" variable to pre-specified smooth
+  sm$by <- by_var
+
+  # Construct smooth with smoothCon
+  smooth_list <- smoothCon(
+    sm,
+    dat,
+    knots = NULL,
+    absorb.cons = T, # Apply identifiability constraints
+    scale.penalty = FALSE, # Don't multiply penalty scale
+    sparse.cons = -1, # If no existing constraint, apply sweep and drop
+    apply.by = FALSE # Also return a design matrix not separated by smooths
+  )
+
+  out <- list("smooth" = smooth_list)
+
+  # Extract list of design matrices
+  X_list <- map(smooth_list, ~.$X)
+
+  # Combine to form total design matrix
+  ref_X <- Reduce("cbind", X_list[-1], init = smooth_list[[1]]$X0)
+
+  # Construct penalty matrix for all splines together
+  S_list <- map(smooth_list, ~.$S[[1]])
+
+  # Construct penalty matrix for all splines together
+  # Define indicator matrix list
+  # Each matrix is 0 except for a 1 on the diagonal
+  # This 1 represents the block where the penalty matrix S is populated
+  spline_indicator_list <- map(1:length(smooth_list),
+                               .f = function(j,
+                                             z = rep(0, length(smooth_list))){
+                                 z[j] <- 1
+                                 diag(z, nrow = length(z))
+                               })
+
+  # For each matrix in the list, take kronecker product with S from the smooth
+  ref_S <- map2(spline_indicator_list, S_list,
+                ~kronecker(.x, .y))
+
+  # If there is no parametric formula, add unpenalized intercept
+  if(is.null(param_formula)){
+    design_param <- matrix(1, nrow = nrow(ref_X))
+
+    # Include 1 x 1 matrix for unpenalized intercept
+    S_unpenal <- matrix(1, 1, 1)
+  } else{
+    # Otherwise, create matrix columns from formula
+
+    # Create parametric matrix from the data
+    design_param <- model.matrix(param_formula, dat)
+    colnames(design_param) <- NULL
+
+    # Create identity matrix for these unpenalized parameters
+    S_unpenal <- diag(nrow = ncol(design_param))
+  }
+
+  # Merge model matrix with spline matrix for full design matrix
+  X_design <- cbind(design_param, ref_X)
+
+  out[["X"]] <- X_design
+
+  ## Create full penalty / precision matrix
+
+  # Add 0's to unpenalized matrix to match size of penalties
+  S_unpenal_full <- as.matrix(bdiag(S_unpenal,
+                                    diag(0, nrow = nrow(ref_S[[1]]))))
+
+  # Add 0's for penalized matrices at beginning of other matrices
+  S_full_size <- map(ref_S,
+                     ~as.matrix(
+                       bdiag(
+                         diag(0, nrow = nrow(S_unpenal)),
+                         .x)))
+
+  # Append unpenalized chunk to beginning of penalty matrix list
+  S_full <- c(list(S_unpenal_full), S_full_size)
+
+  out[["S"]] <- S_full
+
+  out
+}
+
+
 ### Write functions to set up design matrix
 ##  - Given a constructed smooth (with constraint applied), factor variable, and new data:
 ## .. and generate full design matrix for new data,

@@ -32,7 +32,7 @@ source(here("source", "fn_obtain_predictions.R"))
 source(here("source", "fn_lm_penalized_gibbs.R"))
 source(here("source", "fns_construct_smooth_ref_code.R"))
 source(here("source", "fn_hierarchical_penalized_gibbs.R"))
-source(here("source", "fn_simulate_data.R"))
+source(here("source", "fns_simulate_data.R"))
 source(here("source", "fn_mv_normal_matrix.R"))
 
 # Set file paths ----------------------------------------------------------
@@ -54,6 +54,12 @@ so_GRID_N <- 10
 
 # Define number of knots along age effect
 cranio_knots_age <- 10
+
+# Define number of knots along age effect for simulations
+cranio_knots_age_sim <- 14
+
+# Define which basis to use for age effect smooth (thin-plate with shrinkage)
+age_bs <- "ts"
 
 # Set plotting constants --------------------------------------------------
 
