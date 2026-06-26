@@ -3,6 +3,8 @@
 ### PURPOSE: Run Hierarchical Gibbs model once to test on simulated data
 ################################################################################
 
+source(here::here("source", "000_definitions.R"))
+
 # Load files --------------------------------------------------------------
 
 # Load simulated data ("sim_df_model_data")
