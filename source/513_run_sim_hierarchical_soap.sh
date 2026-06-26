@@ -1,8 +1,8 @@
 #!/bin/bash
-#SBATCH --job-name=run_cranio_mcmc
+#SBATCH --job-name=sim_hier
 #SBATCH --partition=wrobel
-#SBATCH --output=run_cranio_mcmc.out
-#SBATCH --error=run_cranio_mcmc.err
+#SBATCH --output=sim_hier.out
+#SBATCH --error=sim_hier.err
 
 module purge
 module load R
