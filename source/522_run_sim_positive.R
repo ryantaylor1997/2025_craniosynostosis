@@ -7,32 +7,20 @@ source(here::here("source", "000_definitions.R"))
 
 # Load files --------------------------------------------------------------
 
-# Load simulated data ("sim_df_model_data")
-load(file = here("data", "simulations", "sim_data_model.rda"))
-
-# Set initial values ------------------------------------------------------
-
-# Set true values as initial gamma values
-gamma_init <- as(sim_df_model_data$gamma_true, "sparseVector")
-
-set.seed(617)
-
-gamma_init <- gamma_init +
-  rnorm(length(gamma_init), 0, sd(gamma_init))
-
-gamma_init <- as.vector(gamma_init)
+# Load simulated data ("sim_df_positive")
+load(file = here("data", "simulations", "sim_data_positive.rda"))
 
 # Run model ---------------------------------------------------------------
 
-hierarchy_test <- hierarchical_penalized_gibbs(
-  outcome_mx = sim_df_model_data$outcome,
-  basis_mx = sim_df_model_data$call$soap_design_mx,
-  demo_mx = sim_df_model_data$call$obs_design_mx,
-  pen_basis = sim_df_model_data$call$penalty_soap_list,
-  pen_demo = sim_df_model_data$call$penalty_obs_list,
+positive_test <- hierarchical_penalized_gibbs(
+  outcome_mx = sim_df_positive$outcome,
+  basis_mx = sim_df_positive$call$soap_design_mx,
+  demo_mx = sim_df_positive$call$obs_design_mx,
+  pen_basis = sim_df_positive$call$penalty_soap_list,
+  pen_demo = sim_df_positive$call$penalty_obs_list,
   basis_has_unpenalized = FALSE,
   demo_has_unpenalized = TRUE,
-  gamma0 = gamma_init,
+  gamma0 = 0,
   beta0 = 0,
   sigmasq0 = 1,
   tausq0 = 1,
@@ -51,8 +39,8 @@ hierarchy_test <- hierarchical_penalized_gibbs(
   update_pct = 0.1
 )
 
-save(hierarchy_test,
+save(positive_test,
      file = here::here("data", "simulations",
-                       paste0("hierarchy_test_",
+                       paste0("positive_test_",
                               format(Sys.time(), "%Y-%m-%d"),
                               ".rda")))

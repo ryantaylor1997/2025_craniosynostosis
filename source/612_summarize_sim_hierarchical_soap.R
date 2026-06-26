@@ -11,7 +11,7 @@ gammas_to_check <- c(1:2, 6:7, 10:12, 46:48, 64:65)
 # Load files --------------------------------------------------------------
 
 # Load model results ("hierarchy_test")
-LOAD_GIBBS_DATE <- "2026-06-24"
+LOAD_GIBBS_DATE <- "2026-06-26"
 
 load(file = here::here("data", "simulations",
                        paste0("hierarchy_test_",
@@ -19,7 +19,7 @@ load(file = here::here("data", "simulations",
                               ".rda")))
 
 # Load simulated data ("sim_df_model_data")
-load(file = here("data", "simulations", "sim_model_data.rda"))
+load(file = here("data", "simulations", "sim_data_model.rda"))
 
 # Load new data to plot model effects on ("obs_df_newdata", "obs_new_design")
 load(file = here("data", "simulations", "sim_obs_newdata.rda"))
@@ -28,7 +28,7 @@ load(file = here("data", "simulations", "sim_obs_newdata.rda"))
 load(file = here("data", "simulations", "sim_obs_data.rda"))
 
 # Load dataset of gamma values to plot on new data ("gamma_newdata_df")
-load(file = here("data", "simulations", "hierarchical_gamma_df.rda"))
+load(file = here("data", "simulations", "gamma_df_hierarchical.rda"))
 
 # Load data set of points with row-column coordinates ("point_coords")
 load(file = here("data", "intermediate", "point_coordinates.rda"))
@@ -145,7 +145,7 @@ obs_trace_hier <- ggplot(hier_gibbs_tr %>%
              ncol = 2, scales = "free") +
   labs(title = "Demographic Variance Traces")
 
-ggsave(here("results", "sim_plot_trace_scalar_obs.png"),
+ggsave(here("results", "sim_plot_hier_trace_scalar_obs.png"),
        obs_trace_hier,
        height = 6, width = 6, units = "in")
 
@@ -177,7 +177,7 @@ gamma_scatter <- ggplot(gamma_vals,
   labs(x = "True Value", y = "Estimate",
        title = "Gamma (Soap Film) Coefficients")
 
-ggsave(here("results", "sim_plot_scatter_gammas.png"),
+ggsave(here("results", "sim_plot_hier_scatter_gammas.png"),
        gamma_scatter,
        height = 6, width = 6, units = "in")
 
@@ -207,7 +207,7 @@ beta_scatter <- ggplot(beta_vals,
   labs(x = "True Value", y = "Estimate",
        title = "Beta (Demographic) Coefficients")
 
-ggsave(here("results", "sim_plot_scatter_betas.png"),
+ggsave(here("results", "sim_plot_hier_scatter_betas.png"),
        beta_scatter,
        height = 6, width = 6, units = "in")
 
@@ -245,7 +245,7 @@ gamma_curve_est_plot <- ggplot(gamma_curve_est_df %>%
   labs(x = "Age", y = "Gamma Value",
        title = "Simulated Age Effects")
 
-ggsave(here("results", "sim_plot_curves_gammas.png"),
+ggsave(here("results", "sim_plot_hier_curves_gammas.png"),
        gamma_curve_est_plot,
        height = 6, width = 6, units = "in")
 
@@ -329,7 +329,7 @@ post_estimates_plot <- ggplot(post_newdata_est %>%
   theme_minimal() +
   theme(legend.position = "bottom")
 
-ggsave(here("results", "sim_plot_estimate_age.png"),
+ggsave(here("results", "sim_plot_hier_estimate_age.png"),
        post_estimates_plot,
        height = 6, width = 6, units = "in")
 
@@ -372,6 +372,6 @@ outcomes_plot <- ggplot(post_outcomes_surface_df %>%
         strip.text.x = element_text(size = 10,
                                     margin = margin(t = 2, b = 3)))
 
-ggsave(here("results", "sim_plot_estimate_surface.png"),
+ggsave(here("results", "sim_plot_hier_estimate_surface.png"),
        outcomes_plot,
        height = 6, width = 6, units = "in")

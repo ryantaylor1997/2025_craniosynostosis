@@ -16,11 +16,11 @@ load(file = here("data", "simulations", "sim_obs_smooth_list.rda"))
 # Set scalar parameters ---------------------------------------------------
 
 # Scalar parameters for outcome data simulation
-sigmasq_sim <- 0.3
+sigmasq_sim <- 0.03
 
-tausq_sim <- 2.5e-3
+tausq_sim <- 2.5e-4
 
-lambda_soap_sim <- c(8e-5, 2e-4)
+lambda_soap_sim <- c(8e-6, 2e-5)
 
 lambda_obs_sim <- c(1, 1e-7)
 
@@ -29,7 +29,7 @@ lambda_obs_sim <- c(1, 1e-7)
 set.seed(413)
 
 # Use inputs above to generate simulated data based on model
-sim_df_model_data <- make_sim_data_hier_soap(
+sim_df_positive <- make_sim_data_hier_pos(
   soap_design_mx = cranio_soap$X,
   obs_design_mx = obs_smooth_list_sim$X,
   penalty_soap_list = cranio_soap$S,
@@ -40,6 +40,6 @@ sim_df_model_data <- make_sim_data_hier_soap(
   lambdas_obs = lambda_obs_sim
 )
 
-save(sim_df_model_data,
-     file = here("data", "simulations", "sim_data_model.rda"))
+save(sim_df_positive,
+     file = here("data", "simulations", "sim_data_positive.rda"))
 

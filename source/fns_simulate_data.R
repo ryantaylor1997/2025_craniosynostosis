@@ -119,45 +119,63 @@ make_sim_data_hier_soap <- function(soap_design_mx, obs_design_mx,
   return(out_list)
 }
 
-
-### Simulate data with strictly positive outcomes
-# Note:
-make_sim_data_pos_soap <- function(soap_design_mx,
-                                   obs_data_df,
-                                   penalty_soap_list,
-                                   sigmasq,
-                                   lambdas_soap){
+### Simulate data according to strictly positive hierarchical model
+make_sim_data_hier_pos <- function(soap_design_mx, obs_design_mx,
+                                   penalty_soap_list, penalty_obs_list,
+                                   sigmasq, tausq,
+                                   lambdas_soap, lambdas_obs){
 
   ### Save dimensions
+  N <- nrow(obs_design_mx)
+  Q <- ncol(obs_design_mx)
   M <- nrow(soap_design_mx)
   K <- ncol(soap_design_mx)
+
+  Q_theta <- length(which(
+    apply(penalty_obs_list[[1]], 2,
+          function(x){ sum(x != 0)}) != 0))
 
   ### Combine parameters with given matrices for Total Penalty Matrices
 
   # Multiply lambdas by demographic penalty matrix
+  penalty_obs_total_list <- map2(lambdas_obs, penalty_obs_list,
+                                 ~.x * .y)
+
   penalty_soap_total_list <- map2(lambdas_soap, penalty_soap_list,
                                   ~.x * .y)
 
   # Sum block diagonal matrices together
+  penalty_obs_total_mx <- Reduce("+", penalty_obs_total_list)
+
   penalty_soap_total_mx <- Reduce("+", penalty_soap_total_list)
 
   ### Moments for generated parameters
 
   # Take generalized inverse of total penalty matrices
+  penalty_obs_var <- ginv(as.matrix(penalty_obs_total_mx))
+
   penalty_soap_var <- ginv(as.matrix(penalty_soap_total_mx))
 
   # Convert to efficient Matrix format
+  penalty_obs_var <- Matrix(penalty_obs_var)
+
   penalty_soap_var <- Matrix(penalty_soap_var)
 
   # Scale inverse penalty matrices by scalar variance terms
+  var_obs_tau <- tausq * penalty_obs_var
+
   var_soap_sigma <- sigmasq * penalty_soap_var
 
+
   ### Draw first-level parameters
+
+  # Set intercept-related beta parameters to be non-zero
+  beta_mean <- c(rep(tausq*5e5, Q_theta), rep(0, (Q - Q_theta)))
 
   # Draw betas as K iid Q-length vectors
   beta_mx <- Matrix(t(
     rmvnorm(K,
-            mean = rep(0, Q),
+            mean = beta_mean,
             sigma = as.matrix(var_obs_tau),
             method = "svd")
   ))
@@ -176,7 +194,7 @@ make_sim_data_pos_soap <- function(soap_design_mx,
   ### Calculate 2nd-level parameters
 
   # Calculate soap film coefficients
-  gamma_mx_true <- #*UPDATE*
+  gamma_mx_true <- obs_design_mx %*% beta_mx
 
   gamma_mx <- gamma_mx_true + epsilon_gamma
 
@@ -192,15 +210,20 @@ make_sim_data_pos_soap <- function(soap_design_mx,
     "outcome_noerror" = outcome_mx_noerror,
     "gamma" = gamma_mx,
     "gamma_true" = gamma_mx_true,
+    "beta" = beta_mx,
+    "beta_var" = var_obs_tau,
     "gamma_var" = var_soap_sigma,
     "call" = list(
       "soap_design_mx" = soap_design_mx,
+      "obs_design_mx" = obs_design_mx,
       "penalty_soap_list" = penalty_soap_list,
+      "penalty_obs_list" = penalty_obs_list,
       "sigmasq" = sigmasq,
-      "lambdas_soap" = lambdas_soap
+      "tausq" = tausq,
+      "lambdas_soap" = lambdas_soap,
+      "lambdas_obs" = lambdas_obs
     )
   )
 
   return(out_list)
 }
-

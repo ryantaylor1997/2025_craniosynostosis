@@ -13,8 +13,8 @@ gammas_to_check <- c(1:2, 6:7, 10:12, 46:48, 64:65)
 # Load observation-level simulated data ("obs_df_sim")
 load(file = here("data", "simulations", "sim_obs_data.rda"))
 
-# Load simulated data ("sim_df_model_data")
-load(file = here("data", "simulations", "sim_data_model.rda"))
+# Load simulated data ("sim_df_positive")
+load(file = here("data", "simulations", "sim_data_positive.rda"))
 
 # Load new data to plot model effects on ("obs_df_newdata", "obs_new_design")
 load(file = here("data", "simulations", "sim_obs_newdata.rda"))
@@ -25,7 +25,7 @@ load(file = here("data", "intermediate", "point_coordinates.rda"))
 # Plot true values for simulated parameters -------------------------------
 
 # Calculate gammas as new design matrix multiplied by simulated betas
-gamma_newdata <- obs_new_design %*% sim_df_model_data$beta
+gamma_newdata <- obs_new_design %*% sim_df_positive$beta
 
 # Match these gammas to age values
 gamma_newdata_df <- obs_df_newdata %>%
@@ -39,7 +39,7 @@ gamma_newdata_df <- obs_df_newdata %>%
   mutate(Gamma = as.numeric(str_remove(Gamma, "V")))
 
 save(gamma_newdata_df,
-     file = here("data", "simulations", "gamma_df_hierarchical.rda"))
+     file = here("data", "simulations", "gamma_df_positive.rda"))
 
 # Plot curves, excluding "deviation-only" values
 gamma_curve_plot <- ggplot(gamma_newdata_df %>%
@@ -54,7 +54,7 @@ gamma_curve_plot <- ggplot(gamma_newdata_df %>%
   labs(x = "Age", y = "Gamma Value",
        title = "Simulated Gamma by Age")
 
-ggsave(here("results", "sim_plot_hier_gamma_age.png"),
+ggsave(here("results", "sim_plot_pos_gamma_age.png"),
        gamma_curve_plot,
        height = 6, width = 6, units = "in")
 
@@ -62,7 +62,7 @@ ggsave(here("results", "sim_plot_hier_gamma_age.png"),
 
 # Make data frame out of outcome with no error
 # (true beta, true gamma, no epsilon)
-outcome_long_df <- sim_df_model_data$outcome_noerror %>%
+outcome_long_df <- sim_df_positive$outcome_noerror %>%
   as.matrix() %>%
   reshape2::melt() %>%
   rename(subj_num = Var1, loc_num = Var2) %>%
@@ -71,7 +71,7 @@ outcome_long_df <- sim_df_model_data$outcome_noerror %>%
   mutate(age_cut = quantcut(age, 5))
 
 save(outcome_long_df,
-     file = here("data", "simulations", "outcome_df_hierarchical.rda"))
+     file = here("data", "simulations", "outcome_df_positive.rda"))
 
 # Summarize this by age bucket
 outcome_summ_age_fusion <- outcome_long_df %>%
@@ -91,6 +91,6 @@ outcome_fusion_age_plot <- ggplot(outcome_summ_age_fusion,
   labs(title = "Age-Fusion Summaries of True Outcomes",
        fill = "Avg. Growth")
 
-ggsave(here("results", "sim_plot_hier_outcome_age.png"),
+ggsave(here("results", "sim_plot_pos_outcome_age.png"),
        outcome_fusion_age_plot,
        height = 6, width = 6, units = "in")
