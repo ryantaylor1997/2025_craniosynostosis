@@ -199,4 +199,6 @@ plot_map_build <- so_test_fit %>%
   theme_void() +
   theme(legend.position = "bottom")
 
-
+ggsave(here("results", "soap_film_fit_building_blocks.png"),
+       plot_map_build,
+       height = 6, width = 6, units = "in")
