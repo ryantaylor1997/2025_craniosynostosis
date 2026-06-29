@@ -24,6 +24,8 @@ gamma_init <- as.vector(gamma_init)
 
 # Run model ---------------------------------------------------------------
 
+set.seed(603)
+
 hierarchy_test <- hierarchical_penalized_gibbs(
   outcome_mx = sim_df_model_data$outcome,
   basis_mx = sim_df_model_data$call$soap_design_mx,

@@ -10,7 +10,21 @@ source(here::here("source", "000_definitions.R"))
 # Load simulated data ("sim_df_positive")
 load(file = here("data", "simulations", "sim_data_positive.rda"))
 
+# Set initial values ------------------------------------------------------
+
+# Set true values as initial gamma values
+gamma_init <- as(sim_df_positive$gamma_true, "sparseVector")
+
+set.seed(617)
+
+gamma_init <- gamma_init +
+  rnorm(length(gamma_init), 0, sd(gamma_init))
+
+gamma_init <- as.vector(gamma_init)
+
 # Run model ---------------------------------------------------------------
+
+set.seed(603)
 
 positive_test <- hierarchical_penalized_gibbs(
   outcome_mx = sim_df_positive$outcome,
