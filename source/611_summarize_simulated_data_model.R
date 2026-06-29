@@ -52,7 +52,8 @@ gamma_curve_plot <- ggplot(gamma_newdata_df %>%
   theme(legend.position = "bottom",
         axis.text.x = element_text(angle = 45, hjust = 1)) +
   labs(x = "Age", y = "Gamma Value",
-       title = "Simulated Gamma by Age")
+       title = "Simulated Gamma by Age",
+       color = "Fusion Type")
 
 ggsave(here("results", "sim_plot_hier_gamma_age.png"),
        gamma_curve_plot,
@@ -87,7 +88,8 @@ outcome_fusion_age_plot <- ggplot(outcome_summ_age_fusion,
   coord_fixed() +
   scale_fill_viridis_c() +
   theme_void() +
-  theme(legend.position = "bottom") +
+  theme(legend.position = "bottom",
+        legend.text = element_text(angle = 45, hjust = 1)) +
   labs(title = "Age-Fusion Summaries of True Outcomes",
        fill = "Avg. Growth")
 

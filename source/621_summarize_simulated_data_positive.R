@@ -87,7 +87,8 @@ outcome_fusion_age_plot <- ggplot(outcome_summ_age_fusion,
   coord_fixed() +
   scale_fill_viridis_c() +
   theme_void() +
-  theme(legend.position = "bottom") +
+  theme(legend.position = "bottom",
+        legend.text = element_text(angle = 45, hjust = 1)) +
   labs(title = "Age-Fusion Summaries of True Outcomes",
        fill = "Avg. Growth")
 

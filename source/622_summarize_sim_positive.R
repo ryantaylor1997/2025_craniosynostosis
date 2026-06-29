@@ -10,16 +10,16 @@ gammas_to_check <- c(1:2, 6:7, 10:12, 46:48, 64:65)
 
 # Load files --------------------------------------------------------------
 
-# Load model results ("hierarchy_test")
+# Load model results ("positive_test")
 LOAD_GIBBS_DATE <- "2026-06-26"
 
 load(file = here::here("data", "simulations",
-                       paste0("hierarchy_test_",
+                       paste0("positive_test_",
                               LOAD_GIBBS_DATE,
                               ".rda")))
 
-# Load simulated data ("sim_df_model_data")
-load(file = here("data", "simulations", "sim_data_model.rda"))
+# Load simulated data ("sim_df_positive")
+load(file = here("data", "simulations", "sim_data_positive.rda"))
 
 # Load new data to plot model effects on ("obs_df_newdata", "obs_new_design")
 load(file = here("data", "simulations", "sim_obs_newdata.rda"))
@@ -49,7 +49,7 @@ load(file = here("data", "simulations", "obs_param_ids.rda"))
 # Turn parameters into long table for trace plotting
 hier_gibbs_tr <- imap(
   # Remove timing from output
-  hierarchy_test %>%
+  positive_test %>%
     list_modify("timing" = zap(),
                 "start-stop" = zap()),
   function(x, xn){
@@ -105,18 +105,18 @@ hier_gibbs_tr <- imap(
   rowwise() %>%
   mutate(
     value_true = ifelse(
-      param_clean == "sigma_sq",  sim_df_model_data$call$sigmasq,
+      param_clean == "sigma_sq",  sim_df_positive$call$sigmasq,
       ifelse(
-        param_clean == "tau_sq", sim_df_model_data$call$tausq,
+        param_clean == "tau_sq", sim_df_positive$call$tausq,
         ifelse(
-          param_clean == "lambda_basis", sim_df_model_data$call$lambdas_soap[param_num],
+          param_clean == "lambda_basis", sim_df_positive$call$lambdas_soap[param_num],
           ifelse(
-            param_clean == "lambda_demo", sim_df_model_data$call$lambdas_obs[param_num+1],
+            param_clean == "lambda_demo", sim_df_positive$call$lambdas_obs[param_num+1],
             ifelse(
               param_clean == "beta",
-              as.matrix(sim_df_model_data$beta)[row_num, col_num],
+              as.matrix(sim_df_positive$beta)[row_num, col_num],
               ifelse(
-                param_clean == "gamma", as.matrix(sim_df_model_data$gamma_true)[row_num, col_num]
+                param_clean == "gamma", as.matrix(sim_df_positive$gamma_true)[row_num, col_num]
               ))))))
   ) %>%
   ungroup()
@@ -132,7 +132,7 @@ basis_trace_hier <- ggplot(hier_gibbs_tr %>%
              ncol = 2, scales = "free") +
   labs(title = "Soap Film Variance Traces")
 
-ggsave(here("results", "sim_plot_hier_trace_scalar_soap.png"),
+ggsave(here("results", "sim_plot_pos_trace_scalar_soap.png"),
        basis_trace_hier,
        height = 6, width = 6, units = "in")
 
@@ -145,7 +145,7 @@ obs_trace_hier <- ggplot(hier_gibbs_tr %>%
              ncol = 2, scales = "free") +
   labs(title = "Demographic Variance Traces")
 
-ggsave(here("results", "sim_plot_hier_trace_scalar_obs.png"),
+ggsave(here("results", "sim_plot_pos_trace_scalar_obs.png"),
        obs_trace_hier,
        height = 6, width = 6, units = "in")
 
@@ -181,7 +181,7 @@ gamma_scatter <- ggplot(gamma_vals,
        title = "Gamma (Soap Film) Coefficients",
        color = "Fusion Type")
 
-ggsave(here("results", "sim_plot_hier_scatter_gammas.png"),
+ggsave(here("results", "sim_plot_pos_scatter_gammas.png"),
        gamma_scatter,
        height = 6, width = 6, units = "in")
 
@@ -214,7 +214,7 @@ beta_scatter <- ggplot(beta_vals,
        title = "Beta (Demographic) Coefficients",
        color = "Effect Type")
 
-ggsave(here("results", "sim_plot_hier_scatter_betas.png"),
+ggsave(here("results", "sim_plot_pos_scatter_betas.png"),
        beta_scatter,
        height = 6, width = 6, units = "in")
 
@@ -222,7 +222,7 @@ ggsave(here("results", "sim_plot_hier_scatter_betas.png"),
 
 # Extract posterior estimates of gamma coefficients
 post_gammas_full <- simplify2array(
-  apply(hierarchy_test$beta, 3,
+  apply(positive_test$beta, 3,
         function(x){ obs_new_design %*% x }, simplify = F))
 
 post_gammas_est <- apply(post_gammas_full, c(1,2), mean)
@@ -255,7 +255,7 @@ gamma_curve_est_plot <- ggplot(gamma_curve_est_df %>%
        color = "Fusion Type",
        linetype = "Sim/Est")
 
-ggsave(here("results", "sim_plot_hier_curves_gammas.png"),
+ggsave(here("results", "sim_plot_pos_curves_gammas.png"),
        gamma_curve_est_plot,
        height = 6, width = 6, units = "in")
 
@@ -268,8 +268,8 @@ sample_points <- sf::st_nearest_feature(region_shape$centroid, mx_pt_shape)
 
 # Calculate would-be "true" outcomes for new data
 outcomes_newdata <- obs_new_design %*%
-  tcrossprod(sim_df_model_data$beta,
-             sim_df_model_data$call$soap_design_mx)
+  tcrossprod(sim_df_positive$beta,
+             sim_df_positive$call$soap_design_mx)
 
 # Convert would-be true outcomes to data frame
 outcomes_newdata_df <- outcomes_newdata %>%
@@ -285,7 +285,7 @@ outcomes_newdata_df <- outcomes_newdata %>%
                      cell_num = value))
 
 # Identify rows in soap design matrix for these sample points
-soap_design_sample <- sim_df_model_data$call$soap_design_mx[sample_points,]
+soap_design_sample <- sim_df_positive$call$soap_design_mx[sample_points,]
 
 # Multiply these by estimated gammas
 post_outcomes_full <- simplify2array(
@@ -344,7 +344,7 @@ post_estimates_plot <- ggplot(post_newdata_est %>%
        color = "Fusion Type",
        linetype = "Sim/Est")
 
-ggsave(here("results", "sim_plot_hier_estimate_age.png"),
+ggsave(here("results", "sim_plot_pos_estimate_age.png"),
        post_estimates_plot,
        height = 6, width = 6, units = "in")
 
@@ -363,7 +363,7 @@ post_gammas_surface_mean <- apply(post_surface_gammas, c(1,2), mean)
 
 # Calculate estimated outcomes for each set of estimated gammas
 post_outcomes_surface <- tcrossprod(post_gammas_surface_mean,
-                                    sim_df_model_data$call$soap_design_mx)
+                                    sim_df_positive$call$soap_design_mx)
 
 # Convert to DF and merge in relevant info
 post_outcomes_surface_df <- reshape2::melt(post_outcomes_surface) %>%
@@ -388,6 +388,6 @@ outcomes_plot <- ggplot(post_outcomes_surface_df %>%
         strip.text.x = element_text(size = 9,
                                     margin = margin(t = 2, b = 3)))
 
-ggsave(here("results", "sim_plot_hier_estimate_surface.png"),
+ggsave(here("results", "sim_plot_pos_estimate_surface.png"),
        outcomes_plot,
        height = 6, width = 6, units = "in")
