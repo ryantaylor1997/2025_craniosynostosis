@@ -75,7 +75,9 @@ cranio_age_break_labels <- map_chr(2:length(cranio_age_breaks),
                                                    "", "<"),
                                            cranio_age_breaks[.]))
 
-
+cranio_age_midpts <- map_dbl(2:length(cranio_age_breaks),
+                             ~round(mean(c(cranio_age_breaks[.-1],
+                                           cranio_age_breaks[.]))))
 
 # Set dictionaries for consistent merging ---------------------------------
 

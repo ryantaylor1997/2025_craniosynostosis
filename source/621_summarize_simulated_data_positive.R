@@ -68,7 +68,10 @@ outcome_long_df <- sim_df_positive$outcome_noerror %>%
   rename(subj_num = Var1, loc_num = Var2) %>%
   left_join(obs_df_sim %>% mutate(subj_num = 1:n())) %>%
   left_join(point_coords %>% mutate(loc_num = 1:n())) %>%
-  mutate(age_cut = quantcut(age, 5))
+  mutate(age_cut = cut(age,
+                       breaks = cranio_age_breaks,
+                       labels = cranio_age_break_labels,
+                       right = FALSE, include.lowest = T))
 
 save(outcome_long_df,
      file = here("data", "simulations", "outcome_df_positive.rda"))

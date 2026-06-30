@@ -11,7 +11,7 @@ gammas_to_check <- c(1:2, 6:7, 10:12, 46:48, 64:65)
 # Load files --------------------------------------------------------------
 
 # Load model results ("positive_test")
-LOAD_GIBBS_DATE <- "2026-06-26"
+LOAD_GIBBS_DATE <- "2026-06-29"
 
 load(file = here::here("data", "simulations",
                        paste0("positive_test_",
@@ -353,7 +353,7 @@ ggsave(here("results", "sim_plot_pos_estimate_age.png"),
 # Filter to a subset of sample individuals at interpretable ages
 post_surface_data <- obs_df_newdata %>%
   mutate(row_num = row_number()) %>%
-  filter(age %in% c(round(seq(0, cranio_max_age, length.out = 7) / 10) * 10))
+  filter(age %in% cranio_age_midpts)
 
 # Extract gammas specific to these individuals
 post_surface_gammas <- post_gammas_full[post_surface_data$row_num, ,]
